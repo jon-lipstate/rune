@@ -1,5 +1,12 @@
 package ttf
 
+// NOTE: every `subtable.data.(^FormatN)` below uses the checked form. A cmap
+// subtable whose format field is valid but whose BODY failed to parse leaves
+// `data` nil, and an unchecked assertion then panics -- which a merely damaged
+// font is enough to trigger, taking the caller down instead of failing the
+// character lookup. Found by fuzzing fonts whose checksums were repaired after
+// corruption, so they load and the damage is only met during parsing.
+
 
 get_glyph_from_cmap :: proc(font: ^Font, codepoint: rune) -> (Glyph, bool) {
 	cmap_table, ok := get_table(font, .cmap, load_cmap_table, CMAP_Table)
@@ -96,7 +103,8 @@ get_glyph_from_subtable :: proc(
 		// Format 0 - only handles codepoints 0-255
 		if codepoint <= 0xFF {
 			// fmt.println("Byte_Encoding")
-			f0 := subtable.data.(^Format0)
+			f0, f0_ok := subtable.data.(^Format0)
+			if !f0_ok {return 0, false}
 			glyph_id := get_format0_glyph_id(data, f0, u8(codepoint))
 			// Debug: print values
 			// fmt.printf("Format 0 lookup: codepoint %v -> glyph %v\n", codepoint, glyph_id)
@@ -106,7 +114,8 @@ get_glyph_from_subtable :: proc(
 	case .High_Byte_Mapping:
 		// Format 2 - for CJK fonts, handles codepoints 0-65535
 		if codepoint <= 0xFFFF {
-			f2 := subtable.data.(^Format2)
+			f2, f2_ok := subtable.data.(^Format2)
+			if !f2_ok {return 0, false}
 
 			// Split into high and low bytes
 			high_byte := u8((codepoint >> 8) & 0xFF)
@@ -156,7 +165,8 @@ get_glyph_from_subtable :: proc(
 	case .Segment_Mapping:
 		// Format 4 - handles BMP unicode (0-65535)
 		if codepoint <= 0xFFFF {
-			f4 := subtable.data.(^Format4)
+			f4, f4_ok := subtable.data.(^Format4)
+			if !f4_ok {return 0, false}
 			char_code := u16(codepoint)
 
 			// Binary search through segments
@@ -272,7 +282,8 @@ get_glyph_from_subtable :: proc(
 	case .Trimmed_Table:
 		// Format 6 - trimmed array for a contiguous subset of the BMP
 		if codepoint <= 0xFFFF {
-			f6 := subtable.data.(^Format6)
+			f6, f6_ok := subtable.data.(^Format6)
+			if !f6_ok {return 0, false}
 
 			if codepoint >= rune(f6.first_code) &&
 			   codepoint < rune(f6.first_code + f6.entry_count) {
@@ -284,7 +295,8 @@ get_glyph_from_subtable :: proc(
 
 	case .Mixed_Coverage:
 		// Format 8 - mixed 16-bit and 32-bit coverage
-		f8 := subtable.data.(^Format8)
+		f8, f8_ok := subtable.data.(^Format8)
+		if !f8_ok {return 0, false}
 
 		// For BMP characters, check if it's marked as part of a 32-bit value
 		if codepoint <= 0xFFFF {
@@ -309,7 +321,8 @@ get_glyph_from_subtable :: proc(
 
 	case .Trimmed_Array:
 		// Format 10 - trimmed array for 32-bit characters
-		f10 := subtable.data.(^Format10)
+		f10, f10_ok := subtable.data.(^Format10)
+		if !f10_ok {return 0, false}
 
 		if codepoint >= rune(f10.start_char_code) &&
 		   codepoint < rune(f10.start_char_code + f10.num_chars) {
@@ -320,7 +333,8 @@ get_glyph_from_subtable :: proc(
 
 	case .Segmented_Coverage:
 		// Format 12 - segmented coverage table for full Unicode range
-		f12 := subtable.data.(^Format12)
+		f12, f12_ok := subtable.data.(^Format12)
+		if !f12_ok {return 0, false}
 
 		// Binary search through groups
 		left, right := uint(0), uint(f12.num_groups) - 1
@@ -343,7 +357,8 @@ get_glyph_from_subtable :: proc(
 
 	case .Many_To_One_Mapping:
 		// Format 13 - many-to-one mappings
-		f13 := subtable.data.(^Format13)
+		f13, f13_ok := subtable.data.(^Format13)
+		if !f13_ok {return 0, false}
 
 		// Binary search through groups
 		left, right := uint(0), uint(f13.num_groups) - 1
@@ -365,7 +380,8 @@ get_glyph_from_subtable :: proc(
 		// Format 14 - Unicode Variation Sequences
 		// Note: This requires special handling, as it maps base+variation pairs
 		// This implementation only checks for non-default mappings
-		f14 := subtable.data.(^Format14)
+		f14, f14_ok := subtable.data.(^Format14)
+		if !f14_ok {return 0, false}
 
 		// This format is usually used with another format that handles the base characters
 		// Here we're only handling variation selectors, not base characters
@@ -421,7 +437,8 @@ get_variation_selector_glyph :: proc(
 		return 0, false
 	}
 
-	f14 := format14_subtable.data.(^Format14)
+	f14, f14_ok := format14_subtable.data.(^Format14)
+	if !f14_ok {return 0, false}
 
 	// Find the variation selector
 	var_sel_index: uint = 0

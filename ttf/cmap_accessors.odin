@@ -2,8 +2,15 @@ package ttf
 
 
 // Format 0 accessors
-get_format0_glyph_id :: proc(data: []byte, f0: ^Format0, char_code: u8) -> u8 #no_bounds_check {
-	return data[f0.glyph_ids_offset + uint(char_code)] // TODO: can this overrun?? maybe remove no bound check
+//
+// A well-formed format 0 subtable is exactly 262 bytes -- 6 of header and a
+// 256-entry glyph array -- so the index cannot overrun. A TRUNCATED one can, and
+// this is reached straight from a codepoint lookup, so the read is checked
+// rather than trusted. 0 is the "no glyph" id the caller already tests for.
+get_format0_glyph_id :: proc(data: []byte, f0: ^Format0, char_code: u8) -> u8 {
+	i := f0.glyph_ids_offset + uint(char_code)
+	if i >= len(data) {return 0}
+	return data[i]
 }
 
 // Format 2 accessors
@@ -90,7 +97,9 @@ get_format8_is32_bit :: proc(data: []byte, f8: ^Format8, char_code: u16) -> bool
 	byte_index := uint(char_code) / 8
 	bit_index := uint(char_code) % 8
 
-	return (data[f8.is_32_offset + byte_index] & (1 << bit_index)) != 0
+	i := f8.is_32_offset + byte_index
+	if i >= len(data) {return false}
+	return (data[i] & (1 << bit_index)) != 0
 }
 
 get_format8_group :: proc(
@@ -170,6 +179,7 @@ get_format14_variation_selector :: proc(
 	}
 
 	var_sel_offset := f14.var_selectors_offset + index * 11
+	if var_sel_offset + 11 > len(data) {return {}}
 
 	// Read 24-bit variation selector
 	selector :=
@@ -215,6 +225,7 @@ get_format14_default_uvs_range :: proc(
 	}
 
 	range_offset := f14.offset + uint(var_sel.default_uvs_offset) + 4 + index * 4
+	if range_offset + 4 > len(data) {return 0, 0}
 
 	// Read 24-bit Unicode value
 	start_unicode =
@@ -241,6 +252,7 @@ get_format14_nondefault_uvs_mapping :: proc(
 	}
 
 	mapping_offset := f14.offset + uint(var_sel.nondefault_uvs_offset) + 4 + index * 5
+	if mapping_offset + 5 > len(data) {return 0, 0}
 
 	// Read 24-bit Unicode value
 	unicode =

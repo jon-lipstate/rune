@@ -75,6 +75,10 @@ _load_font_from_data :: proc(
 
 		parsed_info := font._tables[tag]
 		if !parsed_info.valid {
+			// The checksum branch below logs; this one did not, so a font whose
+			// table failed to PARSE was refused with no indication of which
+			// table or why -- the caller saw only a bare failure.
+			log.errorf("[Ttf parser] table %v failed to parse", tag)
 			ctx.ok = false
 		}
 		bad_checksum := false

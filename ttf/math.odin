@@ -346,10 +346,6 @@ get_math_variants :: proc(
 	assembly_offset := read_u16(math.raw_data, construction_offset)
 	variant_count := read_u16(math.raw_data, construction_offset + 2)
 
-	if variant_count == 0 {
-		return nil, nil, false
-	}
-
 	// Read assembly if present
 	assembly_ptr: ^OpenType_Math_Glyph_Assembly = nil
 	if assembly_offset > 0 {
@@ -359,15 +355,28 @@ get_math_variants :: proc(
 		}
 	}
 
-	// Create a slice that points directly into the raw data
-	variants_offset = construction_offset + 4
+	// variantCount and glyphAssemblyOffset are INDEPENDENT fields of
+	// MathGlyphConstruction: a construction may carry an assembly and no variant
+	// ladder at all. Returning early on variantCount == 0 throws that assembly
+	// away, and the delimiter then silently refuses to grow. XITS builds both its
+	// up arrow (U+2191) and its bold vertical bar this way -- zero variants, a
+	// two-part assembly each.
+	variants_array: []OpenType_Math_Glyph_Variant = nil
+	if variant_count > 0 {
+		// Create a slice that points directly into the raw data
+		variants_offset = construction_offset + 4
 
-	if bounds_check(variants_offset + uint(variant_count) * 4 > uint(len(math.raw_data))) {
-		return nil, nil, false
+		if bounds_check(variants_offset + uint(variant_count) * 4 > uint(len(math.raw_data))) {
+			return nil, nil, false
+		}
+
+		v_arr_ptr := ([^]OpenType_Math_Glyph_Variant)(&math.raw_data[variants_offset])
+		variants_array = v_arr_ptr[:variant_count]
 	}
 
-	v_arr_ptr := ([^]OpenType_Math_Glyph_Variant)(&math.raw_data[variants_offset])
-	variants_array := v_arr_ptr[:variant_count]
+	if variants_array == nil && assembly_ptr == nil {
+		return nil, nil, false
+	}
 
 	return variants_array, assembly_ptr, true
 }

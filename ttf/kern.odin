@@ -235,7 +235,9 @@ get_kerning :: proc(kern: ^OpenType_Kern_Table, left_glyph: Glyph, right_glyph: 
 					return v
 				}
 			case .Format_1, .Format_3:
-				unimplemented()
+				// Not supported. A font that carries one of these is not
+				// malformed, so skip the subtable and keep looking -- panicking
+				// here takes down the caller over a table it never asked for.
 			}
 
 		}
