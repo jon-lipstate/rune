@@ -146,8 +146,8 @@ get_kerning_from_pair_pos_format1 :: proc(
 
 	// Read offsets and formats
 	coverage_offset := subtable_offset + uint(read_u16(data, subtable_offset + 2))
-	value_format1 := transmute(Value_Format)read_u16(data, subtable_offset + 4)
-	value_format2 := transmute(Value_Format)read_u16(data, subtable_offset + 6)
+	value_format1 := Value_Format(read_u16be(data, subtable_offset + 4))
+	value_format2 := Value_Format(read_u16be(data, subtable_offset + 6))
 	pair_set_count := read_u16(data, subtable_offset + 8)
 
 	// Calculate size of each value record for later use
@@ -207,13 +207,13 @@ get_kerning_from_pair_pos_format1 :: proc(
 			y_advance = i16(0)
 
 			// Check if horizontal advance is specified in the value format
-			if value_format1.X_ADVANCE {
+			if value_flags(value_format1).X_ADVANCE {
 				// Calculate offset to x_advance within the value record
 				x_advance_offset := value1_offset
-				if value_format1.X_PLACEMENT {
+				if value_flags(value_format1).X_PLACEMENT {
 					x_advance_offset += 2
 				}
-				if value_format1.Y_PLACEMENT {
+				if value_flags(value_format1).Y_PLACEMENT {
 					x_advance_offset += 2
 				}
 
@@ -225,16 +225,16 @@ get_kerning_from_pair_pos_format1 :: proc(
 			}
 
 			// Check if vertical advance is specified
-			if value_format1.Y_ADVANCE {
+			if value_flags(value_format1).Y_ADVANCE {
 				// Calculate offset to y_advance within the value record
 				y_advance_offset := value1_offset
-				if value_format1.X_PLACEMENT {
+				if value_flags(value_format1).X_PLACEMENT {
 					y_advance_offset += 2
 				}
-				if value_format1.Y_PLACEMENT {
+				if value_flags(value_format1).Y_PLACEMENT {
 					y_advance_offset += 2
 				}
-				if value_format1.X_ADVANCE {
+				if value_flags(value_format1).X_ADVANCE {
 					y_advance_offset += 2
 				}
 
@@ -384,13 +384,13 @@ get_kerning_from_pair_pos_format2 :: proc(
 
 	// Read the value record
 	// Check if horizontal advance is specified in the value format
-	if value_format1.X_ADVANCE {
+	if value_flags(value_format1).X_ADVANCE {
 		// Calculate offset to x_advance within the value record
 		x_advance_offset := class2_record_offset
-		if value_format1.X_PLACEMENT {
+		if value_flags(value_format1).X_PLACEMENT {
 			x_advance_offset += 2
 		}
-		if value_format1.Y_PLACEMENT {
+		if value_flags(value_format1).Y_PLACEMENT {
 			x_advance_offset += 2
 		}
 
@@ -402,16 +402,16 @@ get_kerning_from_pair_pos_format2 :: proc(
 	}
 
 	// Check if vertical advance is specified
-	if value_format1.Y_ADVANCE {
+	if value_flags(value_format1).Y_ADVANCE {
 		// Calculate offset to y_advance within the value record
 		y_advance_offset := class2_record_offset
-		if value_format1.X_PLACEMENT {
+		if value_flags(value_format1).X_PLACEMENT {
 			y_advance_offset += 2
 		}
-		if value_format1.Y_PLACEMENT {
+		if value_flags(value_format1).Y_PLACEMENT {
 			y_advance_offset += 2
 		}
-		if value_format1.X_ADVANCE {
+		if value_flags(value_format1).X_ADVANCE {
 			y_advance_offset += 2
 		}
 
@@ -521,7 +521,7 @@ get_adjustment_from_single_pos_format2 :: proc(
 
 	// Read coverage offset and value format
 	coverage_offset := subtable_offset + uint(read_u16(data, subtable_offset + 2))
-	value_format := transmute(Value_Format)read_u16(data, subtable_offset + 4)
+	value_format := Value_Format(read_u16be(data, subtable_offset + 4))
 	value_count := read_u16(data, subtable_offset + 6)
 
 	// Check if the glyph is in the coverage table

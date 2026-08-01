@@ -48,6 +48,7 @@ Global_State :: struct {
 	engine: ^shaper.Engine,
 	face: ^renderer.OpenGL_Font_Face_Instance,
 	font_id: shaper.Font_ID,
+	font:    ^ttf.Font, // owned here; the shaper engine only borrows it
 	editor: Editor,
 }
 
@@ -124,6 +125,7 @@ setup :: proc() -> bool {
 		return false
 	}
 
+	state.font = font
 	reg_ok: bool
 	state.font_id, reg_ok = shaper.register_font(state.engine, font)
 	if !reg_ok {
@@ -167,6 +169,9 @@ setup :: proc() -> bool {
 cleanup :: proc() {
 	if state.engine != nil {
 		shaper.destroy_engine(state.engine)
+	}
+	if state.font != nil {
+		ttf.destroy_font(state.font) // engine borrows; we own
 	}
 	renderer.destroy_opengl_renderer(&state.ogl_renderer)
 }

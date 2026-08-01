@@ -162,10 +162,28 @@ OpenType_Math_Glyph_Variant :: struct #packed {
 }
 
 // MathGlyphAssembly table
+// Spec order is italicsCorrection FIRST, then partCount. The part records follow
+// inline at @6; they cannot be a struct field ([^]T is an 8-byte pointer in Odin,
+// not an inline flexible array), so use math_assembly_parts() to reach them.
 OpenType_Math_Glyph_Assembly :: struct #packed {
-	parts_count:        u16be, // Number of parts
-	italics_correction: OpenType_Math_Value_Record, // Italic correction of the assembly
-	part_records:       [^]OpenType_Math_Glyph_Part_Record, // Array of part records
+	italics_correction: OpenType_Math_Value_Record, // @0, 4 bytes
+	parts_count:        u16be, // @4
+	// GlyphPartRecord part_records[parts_count] follows at @6
+}
+
+// Part records of an assembly, as a slice into the raw font data.
+math_assembly_parts :: proc(
+	math: ^OpenType_Math_Table,
+	assembly: ^OpenType_Math_Glyph_Assembly,
+) -> []OpenType_Math_Glyph_Part_Record {
+	if math == nil || assembly == nil {return nil}
+	base := uint(uintptr(rawptr(assembly)) - uintptr(raw_data(math.raw_data)))
+	n := uint(assembly.parts_count)
+	if bounds_check(base + 6 + n * size_of(OpenType_Math_Glyph_Part_Record) > uint(len(math.raw_data))) {
+		return nil
+	}
+	p := ([^]OpenType_Math_Glyph_Part_Record)(&math.raw_data[base + 6])
+	return p[:n]
 }
 
 // MathGlyphPartRecord
@@ -174,13 +192,20 @@ OpenType_Math_Glyph_Part_Record :: struct #packed {
 	start_connector_length: u16be, // Length of connector on the starting side
 	end_connector_length:   u16be, // Length of connector on the ending side
 	full_advance:           u16be, // Advance width/height of the part
-	part_flags:             Math_Glyph_Part_Flags, // Part flags (see below)
+	part_flags:             u16be, // ODIN-BE-BITFIELD; bit 0 = EXTENDER. Use is_extender_part().
 }
 
 // MathGlyphPartRecord flags
-Math_Glyph_Part_Flags :: bit_field u16be {
-	EXTENDER: bool  | 1, // If set, this part can be repeated to reach the desired size
-	reserved: u16be | 15, // Reserved for future use
+// NOTE: this was previously `bit_field u16be { EXTENDER: bool | 1, ... }`, which
+// always read false. Odin extracts bit_field bits from the raw storage, so bit 0
+// of a byte-swapped u16be backing is not bit 0 of the decoded value. Read the
+// value through u16be (which byte-swaps) and mask explicitly instead.
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+MATH_PART_FLAG_EXTENDER :: u16(0x0001)
+
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+is_extender_part :: proc(p: OpenType_Math_Glyph_Part_Record) -> bool {
+	return (u16(p.part_flags) & MATH_PART_FLAG_EXTENDER) != 0
 }
 
 // Load the MATH table
@@ -281,15 +306,23 @@ get_math_variants :: proc(
 	count: uint
 	construction_offsets_offset: uint
 
+	// MathVariants layout:
+	//   minConnectorOverlap        @0
+	//   vertGlyphCoverage          @2
+	//   horizGlyphCoverage         @4
+	//   vertGlyphCount             @6
+	//   horizGlyphCount            @8
+	//   vertGlyphConstruction[]    @10
+	//   horizGlyphConstruction[]   @10 + vertGlyphCount*2
+	vert_count := uint(read_u16(math.raw_data, variants_offset + 6))
 	if is_vertical {
 		coverage_offset = variants_offset + uint(read_u16(math.raw_data, variants_offset + 2))
-		count = uint(read_u16(math.raw_data, variants_offset + 6))
-		construction_offsets_offset = variants_offset + 8
+		count = vert_count
+		construction_offsets_offset = variants_offset + 10
 	} else {
 		coverage_offset = variants_offset + uint(read_u16(math.raw_data, variants_offset + 4))
-		count = uint(read_u16(math.raw_data, variants_offset + 10))
-		construction_offsets_offset =
-			variants_offset + 10 + 2 + uint(read_u16(math.raw_data, variants_offset + 6)) * 2
+		count = uint(read_u16(math.raw_data, variants_offset + 8))
+		construction_offsets_offset = variants_offset + 10 + vert_count * 2
 	}
 
 	// Check if glyph is in coverage
@@ -855,4 +888,89 @@ is_stretchy_operator :: proc(
 	// Check if glyph is in coverage
 	_, in_coverage := get_coverage_index(math.raw_data, coverage_offset, glyph_id)
 	return in_coverage
+}
+
+// ---------------------------------------------------------------------------
+// MathKern, complete API
+//
+// get_all_math_kern_corners() returns only the kern VALUES. A MathKern table is
+// a step function: n correction heights and n+1 kern values, and without the
+// heights there is no way to know which value applies. These give both, plus
+// the spec's selection rule.
+// ---------------------------------------------------------------------------
+
+Math_Kern_Corner :: enum u8 {
+	Top_Right    = 0,
+	Top_Left     = 1,
+	Bottom_Right = 2,
+	Bottom_Left  = 3,
+}
+
+// Correction heights and kern values for one corner of a glyph.
+// len(kerns) == len(heights) + 1.
+get_math_kern :: proc(
+	math: ^OpenType_Math_Table,
+	glyph_id: Glyph,
+	corner: Math_Kern_Corner,
+) -> (
+	heights: []OpenType_Math_Value_Record,
+	kerns: []OpenType_Math_Value_Record,
+	found: bool,
+) {
+	if math == nil || math.glyph_info_offset == 0 {return}
+
+	gi := math.glyph_info_offset
+	if bounds_check(gi + 8 > uint(len(math.raw_data))) {return}
+
+	// MathGlyphInfo: italicsCorrection@0, topAccent@2, extendedShape@4, kernInfo@6
+	kern_info := gi + uint(read_u16(math.raw_data, gi + 6))
+	if kern_info == gi || bounds_check(kern_info + 4 > uint(len(math.raw_data))) {return}
+
+	// MathKernInfo: coverage@0, kernCount@2, records@4 (4 Offset16 each)
+	cov := kern_info + uint(read_u16(math.raw_data, kern_info))
+	idx, in_cov := get_coverage_index(math.raw_data, cov, glyph_id)
+	if !in_cov {return}
+	if uint(idx) >= uint(read_u16(math.raw_data, kern_info + 2)) {return}
+
+	rec := kern_info + 4 + uint(idx) * 8
+	if bounds_check(rec + 8 > uint(len(math.raw_data))) {return}
+
+	off := read_u16(math.raw_data, rec + uint(corner) * 2)
+	if off == 0 {return}
+
+	// MathKern: heightCount@0, correctionHeight[n]@2, kernValues[n+1]@2+n*4
+	kt := kern_info + uint(off)
+	if bounds_check(kt + 2 > uint(len(math.raw_data))) {return}
+	n := uint(read_u16(math.raw_data, kt))
+	need := kt + 2 + n * 4 + (n + 1) * 4
+	if bounds_check(need > uint(len(math.raw_data))) {return}
+
+	if n > 0 {
+		hp := ([^]OpenType_Math_Value_Record)(&math.raw_data[kt + 2])
+		heights = hp[:n]
+	}
+	kp := ([^]OpenType_Math_Value_Record)(&math.raw_data[kt + 2 + n * 4])
+	kerns = kp[:n + 1]
+	return heights, kerns, true
+}
+
+// Kern value applying at `height` (design units).
+//
+// Selection rule: advance while height > correctionHeight[i]; the index where
+// that stops picks the kern value. At an exact boundary (height ==
+// correctionHeight[i]) the LOWER range wins. The spec is ambiguous here; this
+// matches what Microsoft implements and what HarfBuzz does, which is what fonts
+// are actually tuned against.
+math_kern_at_height :: proc(
+	heights: []OpenType_Math_Value_Record,
+	kerns: []OpenType_Math_Value_Record,
+	height: i16,
+) -> i16 {
+	if len(kerns) == 0 {return 0}
+	i := 0
+	for i < len(heights) && height > i16(heights[i].value) {
+		i += 1
+	}
+	if i >= len(kerns) {i = len(kerns) - 1}
+	return i16(kerns[i].value)
 }

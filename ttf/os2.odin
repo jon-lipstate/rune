@@ -27,14 +27,20 @@ OS2_Version :: enum u16be {
 }
 
 // Type flags (fsType)
-OS2_Type_Flags :: bit_field u16be {
+// NOTE: these flag words are stored big-endian in the file. They were declared
+// as `bit_field u16be`/`u32be`, which reads the WRONG BITS: Odin extracts
+// bit_field bits from the raw storage and ignores the endian marker, so a
+// pointer-cast over font bytes decodes garbage. The backing is now native and
+// the raw field is a plain u16be/u32be, converted in the accessor below.
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Type_Flags :: bit_field u16 {
 	RESTRICTED_LICENSE:    bool  | 1, // Bit 0
 	PREVIEW_AND_PRINT:     bool  | 1, // Bit 1
 	EDITABLE_EMBEDDING:    bool  | 1, // Bit 2
 	reserved1:             u8    | 1, // Bit 3 (reserved)
 	NO_SUBSETTING:         bool  | 1, // Bit 4
 	BITMAP_EMBEDDING_ONLY: bool  | 1, // Bit 5
-	reserved2:             u16be | 10, // Bits 6-15 (reserved)
+	reserved2:             u16 | 10, // Bits 6-15 (reserved)
 }
 
 // Font family class (sFamilyClass)
@@ -44,7 +50,8 @@ OS2_Family_Class :: struct #packed {
 }
 
 // Unicode range bits
-OS2_Unicode_Range_1 :: bit_field u32be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Unicode_Range_1 :: bit_field u32 {
 	// ulUnicodeRange1 (Bits 0-31)
 	BASIC_LATIN:                 bool | 1, // Bit 0
 	LATIN_1_SUPPLEMENT:          bool | 1, // Bit 1
@@ -80,7 +87,8 @@ OS2_Unicode_Range_1 :: bit_field u32be {
 	GENERAL_PUNCTUATION:         bool | 1, // Bit 31
 }
 
-OS2_Unicode_Range_2 :: bit_field u32be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Unicode_Range_2 :: bit_field u32 {
 	// ulUnicodeRange2 (Bits 32-63)
 	SUPERSCRIPTS_AND_SUBSCRIPTS:   bool | 1, // Bit 32
 	CURRENCY_SYMBOLS:              bool | 1, // Bit 33
@@ -116,7 +124,8 @@ OS2_Unicode_Range_2 :: bit_field u32be {
 	ARABIC_PRESENTATION_FORMS_A:   bool | 1, // Bit 63
 }
 
-OS2_Unicode_Range_3 :: bit_field u32be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Unicode_Range_3 :: bit_field u32 {
 	// ulUnicodeRange3 (Bits 64-95)
 	COMBINING_HALF_MARKS:          bool | 1, // Bit 64
 	VERTICAL_FORMS:                bool | 1, // Bit 65
@@ -152,7 +161,8 @@ OS2_Unicode_Range_3 :: bit_field u32be {
 	NEW_TAI_LUE:                   bool | 1, // Bit 95
 }
 
-OS2_Unicode_Range_4 :: bit_field u32be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Unicode_Range_4 :: bit_field u32 {
 	// ulUnicodeRange4 (Bits 96-127)
 	BUGINESE:                bool  | 1, // Bit 96
 	GLAGOLITIC:              bool  | 1, // Bit 97
@@ -181,7 +191,7 @@ OS2_Unicode_Range_4 :: bit_field u32be {
 	PHAISTOS_DISC:           bool  | 1, // Bit 120
 	CARIAN:                  bool  | 1, // Bit 121
 	DOMINO_TILES:            bool  | 1, // Bit 122
-	reserved:                u16be | 5, // Bits 123-127
+	reserved:                u16 | 5, // Bits 123-127
 }
 
 // Panose classification
@@ -199,7 +209,8 @@ OS2_Panose :: struct #packed {
 }
 
 // Selection flags (fsSelection)
-OS2_Selection_Flags :: bit_field u16be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Selection_Flags :: bit_field u16 {
 	ITALIC:           bool  | 1, // Bit 0
 	UNDERSCORE:       bool  | 1, // Bit 1
 	NEGATIVE:         bool  | 1, // Bit 2
@@ -210,11 +221,12 @@ OS2_Selection_Flags :: bit_field u16be {
 	USE_TYPO_METRICS: bool  | 1, // Bit 7
 	WWS:              bool  | 1, // Bit 8
 	OBLIQUE:          bool  | 1, // Bit 9
-	reserved:         u16be | 6, // Bits 10-15
+	reserved:         u16 | 6, // Bits 10-15
 }
 
 // Codepage ranges (ulCodePageRange)
-OS2_Codepage_Range_1 :: bit_field u32be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Codepage_Range_1 :: bit_field u32 {
 	// ulCodePageRange1 (Bits 0-31)
 	LATIN_1:             bool  | 1, // Bit 0 (1252)
 	LATIN_2:             bool  | 1, // Bit 1 (1250)
@@ -231,14 +243,15 @@ OS2_Codepage_Range_1 :: bit_field u32be {
 	KOREAN_WANSUNG:      bool  | 1, // Bit 19 (949)
 	CHINESE_TRADITIONAL: bool  | 1, // Bit 20 (950)
 	KOREAN_JOHAB:        bool  | 1, // Bit 21 (1361)
-	reserved1:           u16be | 10, // Bits 9-15, 22-25 (reserved)
+	reserved1:           u16 | 10, // Bits 9-15, 22-25 (reserved)
 	MAC_ROMAN:           bool  | 1, // Bit 29
 	OEM_CHARSET:         bool  | 1, // Bit 30
 	SYMBOL_CHARSET:      bool  | 1, // Bit 31
 	reserved2:           bool  | 1, // Bits 26-28 (reserved)
 }
 
-OS2_Codepage_Range_2 :: bit_field u32be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+OS2_Codepage_Range_2 :: bit_field u32 {
 	// ulCodePageRange2 (Bits 32-63)
 	IBM_GREEK:             bool  | 1, // Bit 32 (869)
 	MSDOS_RUSSIAN:         bool  | 1, // Bit 33 (866)
@@ -256,7 +269,7 @@ OS2_Codepage_Range_2 :: bit_field u32be {
 	ARABIC_ASMO_708:       bool  | 1, // Bit 45 (708)
 	WE_LATIN_1:            bool  | 1, // Bit 46 (850)
 	US:                    bool  | 1, // Bit 47 (437)
-	reserved:              u16be | 16, // Bits 48-63 (reserved)
+	reserved:              u16 | 16, // Bits 48-63 (reserved)
 }
 
 OpenType_OS2_Table :: struct #packed {
@@ -274,7 +287,7 @@ OpenType_OS2_Table_V0 :: struct #packed {
 	x_avg_char_width:       i16be, // Average character width
 	us_weight_class:        u16be, // Weight class
 	us_width_class:         u16be, // Width class
-	fs_type:                OS2_Type_Flags, // Type flags
+	fs_type:                u16be, // ODIN-BE-BITFIELD; decode via get_embedding_permissions()
 	y_subscript_x_size:     i16be, // Subscript horizontal size
 	y_subscript_y_size:     i16be, // Subscript vertical size
 	y_subscript_x_offset:   i16be, // Subscript x offset
@@ -287,12 +300,12 @@ OpenType_OS2_Table_V0 :: struct #packed {
 	y_strikeout_position:   i16be, // Strikeout position
 	s_family_class:         OS2_Family_Class, // Font family class and subclass
 	panose:                 OS2_Panose, // PANOSE classification
-	ul_unicode_range1:      OS2_Unicode_Range_1, // Unicode Character Range part 1
-	ul_unicode_range2:      OS2_Unicode_Range_2, // Unicode Character Range part 2
-	ul_unicode_range3:      OS2_Unicode_Range_3, // Unicode Character Range part 3
-	ul_unicode_range4:      OS2_Unicode_Range_4, // Unicode Character Range part 4
+	ul_unicode_range1:      u32be, // ODIN-BE-BITFIELD; Unicode Range 1, decode via get_unicode_ranges()
+	ul_unicode_range2:      u32be, // ODIN-BE-BITFIELD; Unicode Range 2, decode via get_unicode_ranges()
+	ul_unicode_range3:      u32be, // ODIN-BE-BITFIELD; Unicode Range 3, decode via get_unicode_ranges()
+	ul_unicode_range4:      u32be, // ODIN-BE-BITFIELD; Unicode Range 4, decode via get_unicode_ranges()
 	ach_vend_id:            [4]u8, // Font vendor identification
-	fs_selection:           OS2_Selection_Flags, // Font selection flags
+	fs_selection:           u16be, // ODIN-BE-BITFIELD; decode via get_selection_flags()
 	us_first_char_index:    u16be, // First Unicode character index
 	us_last_char_index:     u16be, // Last Unicode character index
 	s_typo_ascender:        i16be, // Typographic ascender
@@ -308,8 +321,8 @@ OpenType_OS2_Table_V0 :: struct #packed {
 OpenType_OS2_Table_V1 :: struct #packed {
 	using v0:            OpenType_OS2_Table_V0,
 	// Version 1 fields
-	ul_code_page_range1: OS2_Codepage_Range_1, // Code Page Character Range part 1
-	ul_code_page_range2: OS2_Codepage_Range_2, // Code Page Character Range part 2
+	ul_code_page_range1: u32be, // ODIN-BE-BITFIELD; Code Page Range 1, decode via get_codepage_ranges()
+	ul_code_page_range2: u32be, // ODIN-BE-BITFIELD; Code Page Range 2, decode via get_codepage_ranges()
 	// Fields added in version 2
 	// ...
 }
@@ -521,13 +534,15 @@ get_max_context :: proc(os2: ^OS2_Table) -> u16 {
 // Font embedding permissions
 get_embedding_permissions :: proc(os2: ^OS2_Table) -> OS2_Type_Flags {
 	if os2 == nil || os2.raw_data == nil {return {}}
-	return os2.table.v0.fs_type
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+	return transmute(OS2_Type_Flags)u16(os2.table.v0.fs_type)
 }
 
 // Selection flags
 get_selection_flags :: proc(os2: ^OS2_Table) -> OS2_Selection_Flags {
 	if os2 == nil || os2.raw_data == nil {return {}}
-	return os2.table.v0.fs_selection
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+	return transmute(OS2_Selection_Flags)u16(os2.table.v0.fs_selection)
 }
 
 // Unicode and codepage ranges
@@ -540,10 +555,11 @@ get_unicode_ranges :: proc(
 	range4: OS2_Unicode_Range_4,
 ) {
 	if os2 == nil || os2.raw_data == nil {return {}, {}, {}, {}}
-	return os2.table.v0.ul_unicode_range1,
-		os2.table.v0.ul_unicode_range2,
-		os2.table.v0.ul_unicode_range3,
-		os2.table.v0.ul_unicode_range4
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+	return transmute(OS2_Unicode_Range_1)u32(os2.table.v0.ul_unicode_range1),
+		transmute(OS2_Unicode_Range_2)u32(os2.table.v0.ul_unicode_range2),
+		transmute(OS2_Unicode_Range_3)u32(os2.table.v0.ul_unicode_range3),
+		transmute(OS2_Unicode_Range_4)u32(os2.table.v0.ul_unicode_range4)
 }
 
 get_codepage_ranges :: proc(
@@ -555,7 +571,9 @@ get_codepage_ranges :: proc(
 	if os2 == nil || os2.raw_data == nil {return {}, {}}
 	// Codepage ranges are only available in version 1+
 	if os2.version < .Version_1 {return {}, {}}
-	return os2.table.v1.ul_code_page_range1, os2.table.v1.ul_code_page_range2
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+	return transmute(OS2_Codepage_Range_1)u32(os2.table.v1.ul_code_page_range1),
+		transmute(OS2_Codepage_Range_2)u32(os2.table.v1.ul_code_page_range2)
 }
 
 // Optical sizes (Version 5+)
@@ -571,47 +589,47 @@ get_optical_point_sizes :: proc(os2: ^OS2_Table) -> (lower: u16, upper: u16) {
 // Helper functions for common queries
 is_italic :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return false}
-	return os2.table.v0.fs_selection.ITALIC
+	return get_selection_flags(os2).ITALIC
 }
 
 is_bold :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return false}
-	return os2.table.v0.fs_selection.BOLD
+	return get_selection_flags(os2).BOLD
 }
 
 is_regular :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return false}
-	return os2.table.v0.fs_selection.REGULAR
+	return get_selection_flags(os2).REGULAR
 }
 
 is_oblique :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return false}
 	// OBLIQUE flag is only in version 4+
 	if os2.version < .Version_4 {return false}
-	return os2.table.v0.fs_selection.OBLIQUE
+	return get_selection_flags(os2).OBLIQUE
 }
 
 should_use_typo_metrics :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return false}
 	// USE_TYPO_METRICS flag is only in version 3+
 	if os2.version < .Version_3 {return false}
-	return os2.table.v0.fs_selection.USE_TYPO_METRICS
+	return get_selection_flags(os2).USE_TYPO_METRICS
 }
 
 // Licensing and embedding checks
 can_embed :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return true} 	// Default to allowed if no data
-	return !os2.table.v0.fs_type.RESTRICTED_LICENSE
+	return !get_embedding_permissions(os2).RESTRICTED_LICENSE
 }
 
 can_subset :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return true} 	// Default to allowed if no data
-	return !os2.table.v0.fs_type.NO_SUBSETTING
+	return !get_embedding_permissions(os2).NO_SUBSETTING
 }
 
 can_edit :: proc(os2: ^OS2_Table) -> bool {
 	if os2 == nil || os2.raw_data == nil {return true} 	// Default to allowed if no data
-	return os2.table.v0.fs_type.EDITABLE_EMBEDDING
+	return get_embedding_permissions(os2).EDITABLE_EMBEDDING
 }
 
 // Font weight conversion helpers
@@ -689,14 +707,14 @@ width_class_to_font_width :: proc(width_class: u16) -> Font_Width {
 get_font_style :: proc(os2: ^OS2_Table) -> Font_Style {
 	if os2 == nil || os2.raw_data == nil {return .Regular}
 
-	is_bold := os2.table.v0.fs_selection.BOLD
-	is_italic := os2.table.v0.fs_selection.ITALIC
+	is_bold := get_selection_flags(os2).BOLD
+	is_italic := get_selection_flags(os2).ITALIC
 	weight_class := u16(os2.table.v0.us_weight_class)
 
 	// Check for oblique if available (version 4+)
 	is_oblique := false
 	if os2.version >= .Version_4 {
-		is_oblique = os2.table.v0.fs_selection.OBLIQUE
+		is_oblique = get_selection_flags(os2).OBLIQUE
 	}
 
 	// Determine width (condensed/expanded)

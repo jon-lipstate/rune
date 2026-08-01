@@ -17,7 +17,7 @@ OpenType_Head_Table :: struct #packed {
 	font_revision:       Fixed, // Font revision set by font designer
 	checksum_adjustment: u32be, // Used for font checksumming
 	magic_number:        u32be, // Set to 0x5F0F3CF5
-	flags:               Head_Flags, // Font flags
+	flags:               u16be, // ODIN-BE-BITFIELD; decode via get_head_flags()
 	units_per_em:        u16be, // Valid range is 16 to 16384
 	created:             i64be, // Date created (seconds since 1904-01-01)
 	modified:            i64be, // Date modified (seconds since 1904-01-01)
@@ -29,7 +29,7 @@ OpenType_Head_Table :: struct #packed {
 	y_max:               i16be, // Max y for all glyphs
 
 	// Style and rendering properties
-	mac_style:           Mac_Style, // Style bits
+	mac_style:           u16be, // ODIN-BE-BITFIELD; decode via get_mac_style()
 	lowest_rec_ppem:     u16be, // Smallest readable size in pixels
 
 	// Direction and encoding info
@@ -39,7 +39,13 @@ OpenType_Head_Table :: struct #packed {
 }
 
 // Head flags
-Head_Flags :: bit_field u16be {
+// NOTE: these flag words are stored big-endian in the file. They were declared
+// as `bit_field u16be`/`u32be`, which reads the WRONG BITS: Odin extracts
+// bit_field bits from the raw storage and ignores the endian marker, so a
+// pointer-cast over font bytes decodes garbage. The backing is now native and
+// the raw field is a plain u16be/u32be, converted in the accessor below.
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+Head_Flags :: bit_field u16 {
 	Baseline_At_Y0:                    bool | 1, // Baseline at y=0
 	Left_Sidebearing_At_X0:            bool | 1, // LSB at x=0
 	Instructions_Depend_On_Point_Size: bool | 1, // Hinting varies with point size
@@ -54,7 +60,8 @@ Head_Flags :: bit_field u16be {
 }
 
 // Mac style flags
-Mac_Style :: bit_field u16be {
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+Mac_Style :: bit_field u16 {
 	Bold:      bool  | 1,
 	Italic:    bool  | 1,
 	Underline: bool  | 1,
@@ -62,7 +69,7 @@ Mac_Style :: bit_field u16be {
 	Shadow:    bool  | 1,
 	Condensed: bool  | 1,
 	Extended:  bool  | 1,
-	reserved:  u16be | 9, // Bits 7-15 are reserved
+	reserved:  u16 | 9, // Bits 7-15 are reserved
 }
 
 // Load the head table
@@ -149,12 +156,14 @@ get_lowest_recommended_ppem :: proc(head: ^OpenType_Head_Table) -> u16 {
 // Style and rendering flags
 get_head_flags :: proc(head: ^OpenType_Head_Table) -> Head_Flags {
 	if head == nil {return {}}
-	return head.flags
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+	return transmute(Head_Flags)u16(head.flags)
 }
 
 get_mac_style :: proc(head: ^OpenType_Head_Table) -> Mac_Style {
 	if head == nil {return {}}
-	return head.mac_style
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+	return transmute(Mac_Style)u16(head.mac_style)
 }
 
 // Format information

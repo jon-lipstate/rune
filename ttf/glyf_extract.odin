@@ -1,6 +1,7 @@
 package ttf
 
 import "../memory"
+import "base:runtime"
 import "core:fmt"
 
 IDENTITY_MATRIX :: matrix[2, 3]f32{
@@ -22,10 +23,20 @@ Extracted_Simple_Glyph :: struct {
 	// Hinting data
 	instructions:      []byte,
 	bounds:            Bounding_Box,
+
+	// The allocator the slices above came from. Carried here so that
+	// destroy_extracted_glyph() frees through the right one: plain delete() on a
+	// slice goes through context.allocator, which is not necessarily the
+	// allocator that produced it. Producers must set this; a zero value is
+	// treated as context.allocator.
+	allocator:         runtime.Allocator,
 }
 Extracted_Compound_Glyph :: struct {
 	glyph_id:     Glyph,
-	components:   []Glyph_Component, // Allocated
+	// [dynamic] rather than a slice so the allocator AND the capacity travel
+	// with it. Slicing a dynamic array discards both, and freeing a slice of
+	// length n when cap > n reports the wrong size to the allocator.
+	components:   [dynamic]Glyph_Component,
 	instructions: []byte,
 }
 Glyph_Component :: struct {
@@ -53,7 +64,8 @@ extract_glyph :: proc(
 	if glyph_entry.is_empty {
 		// Return an empty simple glyph
 		simple := Extracted_Simple_Glyph {
-			bounds = bbox,
+			bounds    = bbox,
+			allocator = allocator,
 		}
 		return simple, true
 	}
@@ -83,7 +95,7 @@ extract_simple_glyph :: proc(
 	point_count := int(end_points_be[len(end_points_be) - 1]) + 1
 
 	endpoints := make([]u16, len(end_points_be), allocator)
-	defer if !ok {delete(endpoints)}
+	defer if !ok {delete(endpoints, allocator)}
 
 	for i := 0; i < len(endpoints); i += 1 {
 		endpoints[i] = u16(end_points_be[i])
@@ -94,9 +106,9 @@ extract_simple_glyph :: proc(
 
 	// Now extract the points and flags
 	points := make([][2]i16, point_count, allocator)
-	defer if !ok {delete(points)}
+	defer if !ok {delete(points, allocator)}
 	on_curve := make([]bool, point_count, allocator)
-	defer if !ok {delete(on_curve)}
+	defer if !ok {delete(on_curve, allocator)}
 
 	scratch := memory.arena_scratch({allocator})
 	flags := make([]Simple_Glyph_Flags, point_count, scratch)
@@ -238,6 +250,7 @@ extract_simple_glyph :: proc(
 		contour_endpoints = endpoints,
 		instructions      = instructions, // slice into the font file
 		bounds            = bbox,
+		allocator         = allocator,
 	}
 	ok = true
 	return simple, ok
@@ -325,20 +338,29 @@ extract_compound_glyph :: proc(
 	}
 
 	compound := Extracted_Compound_Glyph {
-		components   = components[:],
+		components   = components,
 		instructions = instructions,
 	}
 	ok = true
 	return compound, ok
 }
 
+// Free an extracted glyph through the allocator that produced it.
+//
+// Takes no allocator argument on purpose: the extraction records its own, so
+// this cannot be called with the wrong one. Previously this used bare delete(),
+// which always frees through context.allocator and therefore corrupted the heap
+// whenever a caller extracted from any other allocator.
 destroy_extracted_glyph :: proc(glyph: ^Extracted_Glyph) {
 	switch g in glyph {
 	case Extracted_Simple_Glyph:
-		delete(g.points)
-		delete(g.on_curve)
-		delete(g.contour_endpoints)
+		a := g.allocator
+		if a.procedure == nil {a = context.allocator}
+		delete(g.points, a)
+		delete(g.on_curve, a)
+		delete(g.contour_endpoints, a)
 	case Extracted_Compound_Glyph:
+		// [dynamic] carries its own allocator and capacity.
 		delete(g.components)
 	}
 }

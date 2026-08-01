@@ -78,10 +78,11 @@ destroy_engine :: proc(e: ^Engine) {
 
 	context.allocator = e.allocator
 
-	// Clean up loaded fonts
-	for _, identity in e.loaded_fonts {
-		ttf.destroy_font(identity.font)
-	}
+	// Registered fonts are BORROWED, not owned: register_font() takes an
+	// already-constructed ^Font and the caller keeps ownership. Destroying them
+	// here used to double-free for any caller that also called destroy_font() —
+	// which is the natural pattern, since load_font_from_path() returns an owned
+	// font. It also made a font unregisterable from two engines.
 	delete(e.loaded_fonts)
 
 	// Clean up shaping caches
@@ -132,7 +133,12 @@ release_buffer :: proc(e: ^Engine, buffer: ^Shaping_Buffer) {
 }
 
 // TODO: GET RID oF font_id as a type and just use `^Font` as the key
-// Register a loaded font with the engine
+//
+// Register a font with the engine.
+//
+// The engine BORROWS the font: it does not take ownership and will not free it.
+// The caller must keep it alive for as long as the engine uses it, and is
+// responsible for calling ttf.destroy_font() itself.
 register_font :: proc(e: ^Engine, font: ^Font, name: string = "") -> (id: Font_ID, ok: bool) {
 	if e == nil || font == nil {
 		return {}, false

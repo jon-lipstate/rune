@@ -122,16 +122,16 @@ apply_single_pos_subtable :: proc(
 				changed = true
 
 				// Apply the adjustments to the position data
-				if header.value_format.X_PLACEMENT {
+				if ttf.value_flags(header.value_format).X_PLACEMENT {
 					buffer.positions[i].x_offset += i16(adjustment.x_placement)
 				}
-				if header.value_format.Y_PLACEMENT {
+				if ttf.value_flags(header.value_format).Y_PLACEMENT {
 					buffer.positions[i].y_offset += i16(adjustment.y_placement)
 				}
-				if header.value_format.X_ADVANCE {
+				if ttf.value_flags(header.value_format).X_ADVANCE {
 					buffer.positions[i].x_advance += i16(adjustment.x_advance)
 				}
-				if header.value_format.Y_ADVANCE {
+				if ttf.value_flags(header.value_format).Y_ADVANCE {
 					buffer.positions[i].y_advance += i16(adjustment.y_advance)
 				}
 				// Note: Device table adjustments not implemented yet
@@ -166,16 +166,16 @@ apply_single_pos_subtable :: proc(
 				changed = true
 
 				// Apply the adjustments to the position data
-				if header.value_format.X_PLACEMENT {
+				if ttf.value_flags(header.value_format).X_PLACEMENT {
 					buffer.positions[i].x_offset += i16(adjustment.x_placement)
 				}
-				if header.value_format.Y_PLACEMENT {
+				if ttf.value_flags(header.value_format).Y_PLACEMENT {
 					buffer.positions[i].y_offset += i16(adjustment.y_placement)
 				}
-				if header.value_format.X_ADVANCE {
+				if ttf.value_flags(header.value_format).X_ADVANCE {
 					buffer.positions[i].x_advance += i16(adjustment.x_advance)
 				}
-				if header.value_format.Y_ADVANCE {
+				if ttf.value_flags(header.value_format).Y_ADVANCE {
 					buffer.positions[i].y_advance += i16(adjustment.y_advance)
 				}
 				// Note: Device table adjustments not implemented yet

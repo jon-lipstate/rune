@@ -275,7 +275,7 @@ apply_accelerated_chained_context_subst :: proc(
 	case 3:
 		apply_accelerated_chained_context_format3(gsub, buffer, accel, lookup_flags)
 	case:
-		unimplemented()
+		note_unsupported_gsub(.Apply_Chained_Non_Format3)
 	}
 }
 

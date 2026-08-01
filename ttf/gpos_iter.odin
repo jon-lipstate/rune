@@ -217,7 +217,7 @@ into_single_pos_value_iter :: proc(
 
 	// Read subtable header
 	coverage_offset := subtable_offset + uint(read_u16(gpos.raw_data, subtable_offset + 2))
-	value_format := transmute(Value_Format)read_u16(gpos.raw_data, subtable_offset + 4)
+	value_format := Value_Format(read_u16be(gpos.raw_data, subtable_offset + 4))
 	value_count := read_u16(gpos.raw_data, subtable_offset + 6)
 
 	// Calculate value record size
@@ -365,8 +365,8 @@ into_pair_pos_format1_iter :: proc(
 
 	// Read subtable header
 	coverage_offset := subtable_offset + uint(read_u16(gpos.raw_data, subtable_offset + 2))
-	value_format1 := transmute(Value_Format)read_u16(gpos.raw_data, subtable_offset + 4)
-	value_format2 := transmute(Value_Format)read_u16(gpos.raw_data, subtable_offset + 6)
+	value_format1 := Value_Format(read_u16be(gpos.raw_data, subtable_offset + 4))
+	value_format2 := Value_Format(read_u16be(gpos.raw_data, subtable_offset + 6))
 	pair_set_count := read_u16(gpos.raw_data, subtable_offset + 8)
 
 	// Calculate value record sizes

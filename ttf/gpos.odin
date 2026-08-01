@@ -74,8 +74,19 @@ GPOS_Lookup_Type :: enum u16be {
 	Extension      = 9, // Extension positioning
 }
 
-// ValueRecord flags (valueFormat field)
-Value_Format :: bit_field u16be {
+// ValueRecord flags (valueFormat field).
+//
+// Stored big-endian in the file. This was previously `bit_field u16be`, which
+// silently read the wrong bits: Odin extracts bit_field bits from the raw
+// storage, ignoring the endian marker, so on a little-endian host the byte pair
+// 00 04 (ValueFormat 0x0004, X_ADVANCE — the format used by essentially every
+// kerning PairPos subtable) decoded as all-flags-false and a 0-byte value
+// record. Decode through value_flags() instead.
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+Value_Format :: distinct u16be
+
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+Value_Format_Flags :: bit_field u16 {
 	X_PLACEMENT:     bool | 1, // Bit 0: Includes horizontal adjustment for placement
 	Y_PLACEMENT:     bool | 1, // Bit 1: Includes vertical adjustment for placement
 	X_ADVANCE:       bool | 1, // Bit 2: Includes horizontal adjustment for advance
@@ -86,6 +97,13 @@ Value_Format :: bit_field u16be {
 	Y_ADVANCE_DEV:   bool | 1, // Bit 7: Includes Device table for vertical advance
 	RESERVED:        u8   | 8, // Bits 8-15: Reserved for future use
 }
+
+// Decode a file-order ValueFormat into testable flags.
+// ODIN-BE-BITFIELD: native backing is a workaround for an Odin bug; see ODIN_BE_BITFIELD.md
+value_flags :: proc "contextless" (v: Value_Format) -> Value_Format_Flags {
+	return transmute(Value_Format_Flags)u16(v)
+}
+
 // Always Access Value Records via fn read_value_record; the struct is dynamically sized based on the format mask
 // we use ZII to give a constant sized struct
 OpenType_Value_Record :: struct {
@@ -110,7 +128,7 @@ read_value_record :: proc(
 	current_offset := offset
 
 	// Read each component if its bit is set in the format
-	if format.X_PLACEMENT {
+	if value_flags(format).X_PLACEMENT {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -118,7 +136,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.Y_PLACEMENT {
+	if value_flags(format).Y_PLACEMENT {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -126,7 +144,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.X_ADVANCE {
+	if value_flags(format).X_ADVANCE {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -134,7 +152,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.Y_ADVANCE {
+	if value_flags(format).Y_ADVANCE {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -142,7 +160,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.X_PLACEMENT_DEV {
+	if value_flags(format).X_PLACEMENT_DEV {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -150,7 +168,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.Y_PLACEMENT_DEV {
+	if value_flags(format).Y_PLACEMENT_DEV {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -158,7 +176,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.X_ADVANCE_DEV {
+	if value_flags(format).X_ADVANCE_DEV {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -166,7 +184,7 @@ read_value_record :: proc(
 		current_offset += 2
 	}
 
-	if format.Y_ADVANCE_DEV {
+	if value_flags(format).Y_ADVANCE_DEV {
 		if bounds_check(current_offset + 2 > uint(len(data))) {
 			return record, current_offset - offset
 		}
@@ -726,14 +744,14 @@ load_gpos_table :: proc(font: ^Font) -> (Table_Entry, Font_Error) {
 get_value_record_size :: proc(format: Value_Format) -> uint {
 	size: uint = 0
 
-	if format.X_PLACEMENT {size += 2}
-	if format.Y_PLACEMENT {size += 2}
-	if format.X_ADVANCE {size += 2}
-	if format.Y_ADVANCE {size += 2}
-	if format.X_PLACEMENT_DEV {size += 2}
-	if format.Y_PLACEMENT_DEV {size += 2}
-	if format.X_ADVANCE_DEV {size += 2}
-	if format.Y_ADVANCE_DEV {size += 2}
+	if value_flags(format).X_PLACEMENT {size += 2}
+	if value_flags(format).Y_PLACEMENT {size += 2}
+	if value_flags(format).X_ADVANCE {size += 2}
+	if value_flags(format).Y_ADVANCE {size += 2}
+	if value_flags(format).X_PLACEMENT_DEV {size += 2}
+	if value_flags(format).Y_PLACEMENT_DEV {size += 2}
+	if value_flags(format).X_ADVANCE_DEV {size += 2}
+	if value_flags(format).Y_ADVANCE_DEV {size += 2}
 
 	return size
 }

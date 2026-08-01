@@ -78,7 +78,7 @@ main :: proc() {
 		fmt.eprintln("Error loading font:", err)
 		return
 	}
-	// defer ttf.destroy_font(&font) // <- the engine will delete them; maybe dont do that...
+	defer ttf.destroy_font(font) // engine borrows; caller owns
 
 	// Don't set up the engine until we have a loaded font
 	engine := shaper.create_engine()

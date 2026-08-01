@@ -1855,6 +1855,8 @@ hint_glyph :: proc(program: ^Hinter_Program, glyph_id: ttf.Glyph, allocator: mem
 
 	result: ttf.Extracted_Simple_Glyph
 	result.glyph_id = glyph_id
+	// Record the allocator so ttf.destroy_extracted_glyph() frees correctly.
+	result.allocator = allocator
 	result.points = make([][2]i16, len(cur) - PHANTOM_POINTS, allocator)
 	for &p, i in result.points {
 		c := cur[i]

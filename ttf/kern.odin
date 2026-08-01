@@ -38,7 +38,11 @@ Kern_Subtable_Format :: enum u8 {
 }
 
 // Coverage flags for kern subtables
-Kern_Coverage_Flags :: bit_field u16be {
+// Backing is native: these are transmuted from read_u16(), which already
+// byte-swaps. (A `bit_field u16be` would decode the wrong bits regardless.)
+// ODIN-BE-BITFIELD: native backing is CORRECT here (transmuted from read_u16, already
+// swapped) — do not revert to u16be. See ODIN_BE_BITFIELD.md
+Kern_Coverage_Flags :: bit_field u16 {
 	VERTICAL:     bool | 1, // 0x8000: Set if table has vertical kerning values
 	CROSS_STREAM: bool | 1, // 0x4000: Set if table has cross-stream kerning values
 	VARIATION:    bool | 1, // 0x2000: Set if table has variation kerning values
@@ -82,10 +86,12 @@ OpenType_Kern_Format_1_Header :: struct #packed {
 }
 
 // Format 1 action flags
-Kern_Action_Flags :: bit_field u16be {
+// ODIN-BE-BITFIELD: native backing is CORRECT here (transmuted from read_u16, already
+// swapped) — do not revert to u16be. See ODIN_BE_BITFIELD.md
+Kern_Action_Flags :: bit_field u16 {
 	PUSH:         bool  | 1, // 0x8000: Push this glyph onto the kerning stack
 	DONT_ADVANCE: bool  | 1, // 0x4000: Don't advance to next glyph before new state
-	VALUE_OFFSET: u16be | 14, // 0x3FFF: Offset to value table for glyphs on kerning stack
+	VALUE_OFFSET: u16 | 14, // 0x3FFF: Offset to value table for glyphs on kerning stack
 }
 
 

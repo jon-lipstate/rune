@@ -112,17 +112,26 @@ load_font_from_path :: proc(
 	context.temp_allocator = scratch
 
 	arena: runtime.Arena
+	file_size: i64
+	if options.arena_size <= 0 {
+		fi, stat_err := os.stat(filepath, context.temp_allocator)
+		if stat_err != nil {
+			log.errorf("Unable to stat font file %v: %v", filepath, stat_err)
+			return {}, .Unknown
+		}
+		file_size = fi.size
+	}
 	size :=
-		options.arena_size <= 0 ? uint(os.file_size_from_path(filepath) * (LOAD_ARENA_MUL_SIZE + 1)) : uint(options.arena_size)
+		options.arena_size <= 0 ? uint(file_size * (LOAD_ARENA_MUL_SIZE + 1)) : uint(options.arena_size)
 	arena_err := runtime.arena_init(&arena, size, allocator)
 	if arena_err != nil {
 		log.errorf("Unable to init arena with size %v", size)
 		return {}, .Unknown
 	}
 
-	data, ok := os.read_entire_file(filepath, runtime.arena_allocator(&arena))
-	if !ok {
-		log.errorf("Unable to read font file %v", filepath)
+	data, read_err := os.read_entire_file_from_path(filepath, runtime.arena_allocator(&arena))
+	if read_err != nil {
+		log.errorf("Unable to read font file %v: %v", filepath, read_err)
 		return {}, .Unknown
 	}
 	return _load_font_from_data(data, arena, options)

@@ -143,9 +143,10 @@ create_shaping_buffer :: proc() -> ^Shaping_Buffer {
 destroy_shaping_buffer :: proc(buffer: ^Shaping_Buffer) {
 	if buffer == nil {return}
 
-	if buffer.runes != nil {delete(buffer.runes)}
-
-	// Free the output arrays
+	// Free the output arrays.
+	// NOTE: buffer.runes used to be deleted twice — once in a guarded call above
+	// this block and again here — which aborted with "free(): invalid pointer"
+	// on every engine teardown.
 	delete(buffer.glyphs)
 	delete(buffer.positions)
 	delete(buffer.runes)

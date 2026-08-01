@@ -12,17 +12,26 @@ Glyph_Metrics :: struct {
 }
 
 get_metrics :: proc(font: ^Font, glyph_id: Glyph) -> (metrics: Glyph_Metrics, ok: bool) {
-	// Get glyph bounding box from glyf table
-	glyf, has_glyf := get_table(font, .glyf, load_glyf_table, Glyf_Table)
-	if !has_glyf {return}
-
-	// Get glyph entry
-	glyph_entry, got_entry := get_glyf_entry(glyf, glyph_id)
-	if !got_entry {return}
-
-	// Get bounding box
-	bbox, _ := get_bbox(glyph_entry) // allow empty entries to ZII a box
-	metrics.bbox = bbox
+	// Bounding box comes from the outlines, but ADVANCE WIDTHS COME FROM hmtx,
+	// which CFF fonts have too.
+	//
+	// This used to bail out entirely when there was no 'glyf' table, returning
+	// zeroed metrics for every CFF font — so the shaper laid every CFF glyph out
+	// with advance_width 0 and only GPOS deltas survived.
+	if glyf, has_glyf := get_table(font, .glyf, load_glyf_table, Glyf_Table); has_glyf {
+		if glyph_entry, got_entry := get_glyf_entry(glyf, glyph_id); got_entry {
+			bbox, _ := get_bbox(glyph_entry) // allow empty entries to ZII a box
+			metrics.bbox = bbox
+		}
+	} else if cff, has_cff := get_table(font, .CFF, load_cff_table, CFF_Table); has_cff {
+		// CFF stores no per-glyph bbox; it has to come from running the
+		// charstring. Callers that only need advances should prefer
+		// get_h_metrics(), which skips this.
+		if outline, ok_o := cff_glyph_outline(cff, glyph_id, context.temp_allocator); ok_o {
+			metrics.bbox = outline.bounds
+			destroy_glyph_outline(&outline)
+		}
+	}
 
 	// Get horizontal metrics
 	metrics.advance_width, metrics.lsb = get_h_metrics(font, glyph_id)
