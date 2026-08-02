@@ -165,6 +165,118 @@ u32be_to_tag :: proc(tag: u32be) -> Table_Tag {
 	return .unknown
 }
 
+// The four bytes a tag is written with. The inverse of u32be_to_tag, kept
+// beside it so the two cannot drift apart -- writing a font file needs to
+// go this way, and getting a single tag wrong makes a table invisible.
+tag_to_u32be :: proc(tag: Table_Tag) -> u32be {
+	switch tag {
+	case .avar:
+		return 0x61766172
+	case .BASE:
+		return 0x42415345
+	case .CBDT:
+		return 0x43424454
+	case .CBLC:
+		return 0x43424C43
+	case .CFF:
+		return 0x43464620
+	case .CFF2:
+		return 0x43464632
+	case .cmap:
+		return 0x636D6170
+	case .COLR:
+		return 0x434F4C52
+	case .CPAL:
+		return 0x4350414C
+	case .cvar:
+		return 0x63766172
+	case .cvt:
+		return 0x63767420
+	case .DSIG:
+		return 0x44534947
+	case .EBDT:
+		return 0x45424454
+	case .EBLC:
+		return 0x45424C43
+	case .EBSC:
+		return 0x45425343
+	case .fpgm:
+		return 0x6670676D
+	case .fvar:
+		return 0x66766172
+	case .gasp:
+		return 0x67617370
+	case .GDEF:
+		return 0x47444546
+	case .glyf:
+		return 0x676C7966
+	case .GPOS:
+		return 0x47504F53
+	case .GSUB:
+		return 0x47535542
+	case .gvar:
+		return 0x67766172
+	case .hdmx:
+		return 0x68646D78
+	case .head:
+		return 0x68656164
+	case .hhea:
+		return 0x68686561
+	case .hmtx:
+		return 0x686D7478
+	case .HVAR:
+		return 0x48564152
+	case .JSTF:
+		return 0x4A535446
+	case .kern:
+		return 0x6B65726E
+	case .loca:
+		return 0x6C6F6361
+	case .LTSH:
+		return 0x4C545348
+	case .MATH:
+		return 0x4D415448
+	case .maxp:
+		return 0x6D617870
+	case .MERG:
+		return 0x4D455247
+	case .meta:
+		return 0x6D657461
+	case .MVAR:
+		return 0x4D564152
+	case .name:
+		return 0x6E616D65
+	case .OS2:
+		return 0x4F532F32
+	case .PCLT:
+		return 0x50434C54
+	case .post:
+		return 0x706F7374
+	case .prep:
+		return 0x70726570
+	case .sbix:
+		return 0x73626978
+	case .STAT:
+		return 0x53544154
+	case .SVG:
+		return 0x53564720
+	case .VDMX:
+		return 0x56444D58
+	case .vhea:
+		return 0x76686561
+	case .vmtx:
+		return 0x766D7478
+	case .VORG:
+		return 0x564F5247
+	case .VVAR:
+		return 0x56564152
+	case .unknown:
+		return 0
+	}
+	return 0
+}
+
+
 Table_Blob :: struct {
 	tag:           Table_Tag,
 	check_sum:     u32,
