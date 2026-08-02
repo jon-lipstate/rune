@@ -76,12 +76,15 @@ CFF_Subset_Error :: enum {
 	// CIDs, because that is what carries the renumbering -- and the two uses
 	// cannot both have it. A CID-keyed font has no seac for the same reason.
 	//
-	// Expanding such a glyph into one that draws both components itself would
-	// lift the restriction, and is the reason this is its own error rather than
-	// a refusal: a caller can embed the font whole instead and lose nothing but
-	// the saving. Rare in practice -- none of the 35 OpenType fonts installed
-	// where this was written uses seac, nor any of the maths fonts it was
-	// built for.
+	// Reported separately from a refusal so a caller can embed the font whole
+	// instead, though that is not a full recovery where the font is being used
+	// as a composite one: ghostscript draws nothing for a seac glyph inside a
+	// CIDFont whatever it is wrapped in, while poppler draws it. As a simple
+	// font the same glyph draws in both. Expanding such a glyph into one that
+	// draws its two components itself would lift all of this.
+	//
+	// Rare in practice -- none of the 35 OpenType fonts installed where this
+	// was written uses seac, nor any of the maths fonts it was built for.
 	Composed_Glyph,
 }
 
