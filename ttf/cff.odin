@@ -35,6 +35,10 @@ CFF_Private :: struct {
 	has_local_subrs: bool,
 	default_width_x: f32,
 	nominal_width_x: f32,
+	// Where the dictionary itself sits, so a subset can carry over the hinting
+	// entries it has no reason to understand.
+	dict_offset:     uint,
+	dict_size:       uint,
 }
 
 CFF_Table :: struct {
@@ -234,6 +238,8 @@ cff_dict_find :: proc(dict: []byte, want_op: u16, out: []f64) -> (n: int, found:
 cff_read_private :: proc(raw: []byte, size, offset: uint) -> (p: CFF_Private, ok: bool) {
 	if bounds_check(offset + size > uint(len(raw))) {return {}, false}
 	dict := raw[offset:offset + size]
+	p.dict_offset = offset
+	p.dict_size = size
 
 	vals: [4]f64
 	if n, f := cff_dict_find(dict, CFF_OP_DEFAULT_WIDTH_X, vals[:]); f && n >= 1 {
@@ -268,42 +274,61 @@ load_cff_table :: proc(font: ^Font) -> (Table_Entry, Font_Error) {
 		ctx.ok = false
 		return {}, .Table_Not_Found
 	}
-	if len(raw) < 4 {
+	cff, err := cff_parse_program(raw, font.allocator)
+	if err != .None {
 		ctx.ok = false
-		return {}, .Invalid_Table_Format
+		return {}, err
 	}
-
-	cff := new(CFF_Table, font.allocator)
-	cff.raw = raw
 	cff.font = font
-	cff.allocator = font.allocator
+	return Table_Entry{data = cff}, .None
+}
+
+// Parses a CFF program from bytes that need not be part of a font.
+//
+// The table reader below is the usual way in. This exists because a subset
+// written by cff_subset is a bare program with no sfnt around it, and being
+// able to read one back is what lets a subset be checked against the font it
+// came from -- and what lets anything else that holds a program use it.
+cff_parse_program :: proc(
+	raw: []byte,
+	allocator := context.allocator,
+) -> (
+	^CFF_Table,
+	Font_Error,
+) {
+	if len(raw) < 4 {
+		return nil, .Invalid_Table_Format
+	}
+	cff := new(CFF_Table, allocator)
+	cff.raw = raw
+	cff.allocator = allocator
 	cff.charstring_type = 2
 	cff.font_matrix = {0.001, 0, 0, 0.001, 0, 0}
 
 	// Header: major, minor, hdrSize, offSize
 	hdr_size := uint(read_u8(raw, 2))
 	if bounds_check(hdr_size >= uint(len(raw))) {
-		ctx.ok = false
-		return {}, .Invalid_Table_Format
+		return nil, .Invalid_Table_Format
 	}
 
 	// Name INDEX -> TopDICT INDEX -> String INDEX -> GlobalSubr INDEX
 	pos := hdr_size
+	ok: bool
 	_, pos, ok = cff_read_index(raw, pos)
-	if !ok {ctx.ok = false;return {}, .Invalid_Table_Format}
+	if !ok {return nil, .Invalid_Table_Format}
 
 	top_idx: CFF_Index
 	top_idx, pos, ok = cff_read_index(raw, pos)
-	if !ok || top_idx.count == 0 {ctx.ok = false;return {}, .Invalid_Table_Format}
+	if !ok || top_idx.count == 0 {return nil, .Invalid_Table_Format}
 
 	_, pos, ok = cff_read_index(raw, pos) // String INDEX (unused for outlines)
-	if !ok {ctx.ok = false;return {}, .Invalid_Table_Format}
+	if !ok {return nil, .Invalid_Table_Format}
 
 	cff.global_subrs, pos, ok = cff_read_index(raw, pos)
-	if !ok {ctx.ok = false;return {}, .Invalid_Table_Format}
+	if !ok {return nil, .Invalid_Table_Format}
 
 	top, tok := cff_index_get(raw, top_idx, 0)
-	if !tok {ctx.ok = false;return {}, .Invalid_Table_Format}
+	if !tok {return nil, .Invalid_Table_Format}
 
 	vals: [8]f64
 
@@ -311,8 +336,7 @@ load_cff_table :: proc(font: ^Font) -> (Table_Entry, Font_Error) {
 		cff.charstring_type = i32(vals[0])
 	}
 	if cff.charstring_type != 2 {
-		ctx.ok = false
-		return {}, .Invalid_Table_Format // Type 1 charstrings unsupported
+		return nil, .Invalid_Table_Format // Type 1 charstrings unsupported
 	}
 	if n, f := cff_dict_find(top, CFF_OP_FONT_MATRIX, vals[:]); f && n >= 6 {
 		for k in 0 ..< 6 {cff.font_matrix[k] = f32(vals[k])}
@@ -326,11 +350,10 @@ load_cff_table :: proc(font: ^Font) -> (Table_Entry, Font_Error) {
 	// CharStrings INDEX
 	n_cs, f_cs := cff_dict_find(top, CFF_OP_CHARSTRINGS, vals[:])
 	if !f_cs || n_cs < 1 || vals[0] <= 0 {
-		ctx.ok = false
-		return {}, .Invalid_Table_Format
+		return nil, .Invalid_Table_Format
 	}
 	cff.charstrings, _, ok = cff_read_index(raw, uint(vals[0]))
-	if !ok {ctx.ok = false;return {}, .Invalid_Table_Format}
+	if !ok {return nil, .Invalid_Table_Format}
 
 	// CID-keyed?
 	if _, f := cff_dict_find(top, CFF_OP_ROS, vals[:]); f {
@@ -344,7 +367,7 @@ load_cff_table :: proc(font: ^Font) -> (Table_Entry, Font_Error) {
 		if n, f := cff_dict_find(top, CFF_OP_FD_ARRAY, vals[:]); f && n >= 1 {
 			fd_idx, _, fok := cff_read_index(raw, uint(vals[0]))
 			if fok {
-				cff.fd_privates = make([]CFF_Private, int(fd_idx.count), font.allocator)
+				cff.fd_privates = make([]CFF_Private, int(fd_idx.count), allocator)
 				for i in 0 ..< fd_idx.count {
 					fd, gok := cff_index_get(raw, fd_idx, i)
 					if !gok {continue}
@@ -365,7 +388,7 @@ load_cff_table :: proc(font: ^Font) -> (Table_Entry, Font_Error) {
 		}
 	}
 
-	return Table_Entry{data = cff}, .None
+	return cff, .None
 }
 
 // FDSelect: glyph -> FontDICT index (formats 0 and 3).
@@ -554,6 +577,12 @@ CFF_Ctx :: struct {
 	allocator:  runtime.Allocator,
 	rand_state: u32,
 	failed:     bool,
+	// Where a subset records the subroutines a glyph reached. Nil while
+	// drawing; see cff_trace_subrs.
+	seen_local:  ^map[u32]bool,
+	seen_global: ^map[u32]bool,
+	// Glyphs reached through seac, which draws one glyph from two others.
+	seen_glyphs: ^map[Glyph]bool,
 }
 
 @(private = "file")
@@ -920,6 +949,13 @@ cff_run :: proc(c: ^CFF_Ctx, code: []byte, depth: int) -> bool {
 			}
 			n += cff_subr_bias(idx.count)
 			if n < 0 || u32(n) >= idx.count {return false}
+			// Recorded after biasing, so it is the position in the INDEX
+			// rather than the number the charstring wrote.
+			if b0 == 10 {
+				if c.seen_local != nil {c.seen_local[u32(n)] = true}
+			} else {
+				if c.seen_global != nil {c.seen_global[u32(n)] = true}
+			}
 			sub, sok := cff_index_get(c.cff.raw, idx, u32(n))
 			if !sok {return false}
 			if !cff_run(c, sub, depth + 1) {return false}
@@ -929,8 +965,16 @@ cff_run :: proc(c: ^CFF_Ctx, code: []byte, depth: int) -> bool {
 			return true
 
 		case 14: // endchar
-			// seac form: 4 args (adx ady bchar achar), optionally preceded by width.
-			cff_take_width(c, c.sp == 5 || c.sp == 1 ? 1 : 0)
+			// seac form: 4 args (adx ady bchar achar), optionally preceded by
+			// width.
+			//
+			// The count passed is how many arguments endchar expects, not how
+			// many a width would add: cff_take_width takes one only when there
+			// are more on the stack than the operator wants. Saying 0 here for
+			// the four-argument form -- which is what a seac with no width
+			// looks like -- had it take adx as the width, leaving three, and
+			// the glyph drew nothing at all.
+			cff_take_width(c, c.sp >= 4 ? 4 : 0)
 			if c.sp >= 4 {
 				adx, ady := c.stack[0], c.stack[1]
 				bchar := u8(c.stack[2])
@@ -1172,6 +1216,11 @@ cff_run_seac :: proc(c: ^CFF_Ctx, adx, ady: f32, bchar, achar: u8, depth: int) -
 	bgid, bg := cff_gid_for_sid(c.cff, bsid)
 	agid, ag := cff_gid_for_sid(c.cff, asid)
 	if !bg || !ag {return false}
+	// A subset keeping this glyph has to keep the two it is drawn from.
+	if c.seen_glyphs != nil {
+		c.seen_glyphs[bgid] = true
+		c.seen_glyphs[agid] = true
+	}
 
 	bcode, bc := cff_index_get(c.cff.raw, c.cff.charstrings, u32(bgid))
 	acode, ac := cff_index_get(c.cff.raw, c.cff.charstrings, u32(agid))
@@ -1282,4 +1331,62 @@ cff_glyph_width :: proc(cff: ^CFF_Table, glyph_id: Glyph) -> (f32, bool) {
 
 has_cff_table :: proc(font: ^Font) -> bool {
 	return .CFF in font._has_tables
+}
+
+// Walks a glyph's charstring for the sake of what it reaches rather than what
+// it draws, recording the subroutines it calls and any glyphs it is composed
+// from. A subset needs both: dropping a called subroutine breaks the glyph,
+// and dropping a seac component leaves it half-drawn.
+//
+// The walk is the same interpreter that draws, so a construct it handles when
+// drawing is a construct it accounts for here. Anything it refuses is reported
+// so the caller can keep the font whole rather than cut it wrongly.
+cff_trace_subrs :: proc(
+	cff: ^CFF_Table,
+	glyph_id: Glyph,
+	seen_local: ^map[u32]bool,
+	seen_global: ^map[u32]bool,
+	seen_glyphs: ^map[Glyph]bool,
+) -> bool {
+	if cff == nil {return false}
+	code, cok := cff_index_get(cff.raw, cff.charstrings, u32(glyph_id))
+	if !cok {return false}
+
+	scratch := make([dynamic]Contour, 0, 1, context.temp_allocator)
+	dummy := Glyph_Outline {
+		contours = scratch,
+	}
+	c := CFF_Ctx {
+		cff         = cff,
+		priv        = cff_private_for_glyph(cff, glyph_id),
+		outline     = &dummy,
+		allocator   = context.temp_allocator,
+		in_header   = true,
+		rand_state  = 0x9E3779B9,
+		seen_local  = seen_local,
+		seen_global = seen_global,
+		seen_glyphs = seen_glyphs,
+	}
+	if !cff_run(&c, code, 0) {return false}
+	return !c.failed
+}
+
+// Which FontDICT a glyph draws with, or -1 for a font that has only one.
+//
+// A CID font can hint different scripts differently, and the Private dictionary
+// it selects here also carries nominalWidthX -- which decides how the glyph's
+// own advance is read. A subset that moved a glyph to another FontDICT would
+// change its width, so this is what keeps them together.
+cff_glyph_fd :: proc(cff: ^CFF_Table, gid: Glyph) -> int {
+	return cff_fd_for_glyph(cff, gid)
+}
+
+// The bytes of a FontDICT's Private dictionary, for a subset that copies the
+// hinting entries across rather than interpreting them.
+cff_private_bytes :: proc(cff: ^CFF_Table, fd: int) -> ([]byte, bool) {
+	p := cff.is_cid && fd >= 0 && fd < len(cff.fd_privates) ? cff.fd_privates[fd] : cff.priv
+	if p.dict_size == 0 || p.dict_offset + p.dict_size > uint(len(cff.raw)) {
+		return nil, false
+	}
+	return cff.raw[p.dict_offset:p.dict_offset + p.dict_size], true
 }
