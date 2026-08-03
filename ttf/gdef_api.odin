@@ -33,7 +33,16 @@ determine_glyph_category :: proc(
 		}
 	}
 
-	// Fallback to Unicode properties if GDEF table doesn't have info
+	return glyph_category_from_codepoint(codepoint)
+}
+
+// The Unicode-property half of `determine_glyph_category`, for callers that
+// have already established GDEF says nothing about the glyph.
+//
+// Split out because a caller memoising the GDEF answer would otherwise repeat
+// the failed GDEF lookup on every call for every glyph GDEF does not classify
+// -- and in a Latin paragraph that is most of the punctuation and spacing.
+glyph_category_from_codepoint :: proc(codepoint: rune) -> Glyph_Category {
 	if unichar_is_mark(codepoint) {
 		return .Mark
 	} else if codepoint == 0x200C { 	// ZWNJ (Zero Width Non Joiner)

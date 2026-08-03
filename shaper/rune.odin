@@ -22,7 +22,13 @@ Engine :: struct {
 	_next_font_id:    uint,
 
 	// Shaping cache
-	caches:           map[Shaping_Cache_Key]Shaping_Cache,
+	// Heap-allocated, so a `Plan` handed to a caller stays valid when the map
+	// rehashes. Storing the caches BY VALUE meant `&caches[key]` was a pointer
+	// into storage that moves, which is why the only safe API was to re-hash
+	// the key on every call.
+	caches:           map[Shaping_Cache_Key]^Shaping_Cache,
+	// One per font, shared by every plan on it. See font_cache.odin.
+	font_caches:      map[^Font]^Font_Cache,
 	// cache_capacity:    int,
 	// current_timestamp: u64,
 
@@ -54,7 +60,8 @@ create_engine :: proc(allocator := context.allocator, max_buffers: uint = 4) -> 
 
 	// Initialize maps
 	e.loaded_fonts = make(map[Font_ID]Font_Identity, allocator)
-	e.caches = make(map[Shaping_Cache_Key]Shaping_Cache, allocator)
+	e.caches = make(map[Shaping_Cache_Key]^Shaping_Cache, allocator)
+	e.font_caches = make(map[^Font]^Font_Cache, 4, allocator)
 
 	// Initialize buffer pool
 	e.buffer_pool = make([dynamic]^Shaping_Buffer, 0, max_buffers, allocator)
@@ -85,12 +92,19 @@ destroy_engine :: proc(e: ^Engine) {
 	// font. It also made a font unregisterable from two engines.
 	delete(e.loaded_fonts)
 
-	// Clean up shaping caches
+	// Clean up shaping caches. See cache_destroy.odin: freeing only the two
+	// lookup slices left the accelerators, their nested maps and the metrics
+	// behind -- about 133 KiB per cache entry.
 	for _, cache in e.caches {
-		if cache.gsub_lookups != nil {delete(cache.gsub_lookups)}
-		if cache.gpos_lookups != nil {delete(cache.gpos_lookups)}
+		destroy_shaping_cache(cache)
+		free(cache, e.allocator)
 	}
 	delete(e.caches)
+
+	for _, fc in e.font_caches {
+		font_cache_destroy(fc, e.allocator)
+	}
+	delete(e.font_caches)
 
 	for buffer in e.buffer_pool {
 		destroy_shaping_buffer(buffer)

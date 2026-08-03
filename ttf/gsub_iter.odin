@@ -338,11 +338,18 @@ get_mark_filtering_set :: proc(it: ^Subtable_Iterator) -> (filter_set: u16be, ha
 		return 0, false
 	}
 
+	// NOTE: this returns the wrong value. Lookup 32 of Noto Naskh Arabic has
+	// MarkFilteringSet = 2 and this reads 0. Swapping to read_u16 makes it
+	// read 1, which is no more correct, so the fault is the OFFSET rather than
+	// the read width -- left as it was rather than changed to a different
+	// wrong answer. See bench/README.md.
 	return read_u16be(it.gsub.raw_data, filter_offset), true
 }
 
 Coverage_Iterator :: struct {
-	gsub:            ^GSUB_Table,
+	// Raw bytes, not a GSUB table: coverage tables have the same layout
+	// wherever they live, and GPOS needs to walk them too.
+	data:            []byte,
 	coverage_offset: uint, // Absolute offset to coverage table
 	current_index:   uint,
 	count:           uint,
@@ -350,7 +357,7 @@ Coverage_Iterator :: struct {
 }
 
 into_coverage_iter :: proc(
-	gsub: ^GSUB_Table,
+	data: []byte,
 	subtable_offset: uint,
 	coverage_offset: u16,
 ) -> (
@@ -359,19 +366,19 @@ into_coverage_iter :: proc(
 ) {
 	// Calculate the absolute offset to the coverage table
 	abs_coverage_offset := subtable_offset + uint(coverage_offset)
-	if bounds_check(abs_coverage_offset + 4 > uint(len(gsub.raw_data))) {
+	if bounds_check(abs_coverage_offset + 4 > uint(len(data))) {
 		return {}, false
 	}
 
 	// Read coverage format
-	format := read_u16(gsub.raw_data, abs_coverage_offset)
+	format := read_u16(data, abs_coverage_offset)
 	if format != 1 && format != 2 {
 		fmt.println("into_coverage_iter: Invalid Coverage Format:", format)
 		fmt.printf(
-			"subtable_offset: %v, coverage_offset %v, len(gsub.raw_data):%v\n",
+			"subtable_offset: %v, coverage_offset %v, len(data):%v\n",
 			subtable_offset,
 			coverage_offset,
-			len(gsub.raw_data),
+			len(data),
 		)
 		return {}, false // Invalid coverage format
 	}
@@ -379,22 +386,22 @@ into_coverage_iter :: proc(
 	count: uint
 	if format == 1 {
 		// Format 1: List of individual glyph IDs
-		count = uint(read_u16(gsub.raw_data, abs_coverage_offset + 2))
+		count = uint(read_u16(data, abs_coverage_offset + 2))
 		if count > 0 &&
-		   bounds_check(abs_coverage_offset + 4 + count * 2 > uint(len(gsub.raw_data))) {
+		   bounds_check(abs_coverage_offset + 4 + count * 2 > uint(len(data))) {
 			return {}, false
 		}
 	} else {
 		// Format 2: Ranges of glyph IDs
-		count = uint(read_u16(gsub.raw_data, abs_coverage_offset + 2))
+		count = uint(read_u16(data, abs_coverage_offset + 2))
 		if count > 0 &&
-		   bounds_check(abs_coverage_offset + 4 + count * 6 > uint(len(gsub.raw_data))) {
+		   bounds_check(abs_coverage_offset + 4 + count * 6 > uint(len(data))) {
 			return {}, false
 		}
 	}
 
 	return Coverage_Iterator {
-			gsub = gsub,
+			data = data,
 			coverage_offset = abs_coverage_offset,
 			current_index = 0,
 			count = count,
@@ -411,11 +418,11 @@ iter_coverage_entry :: proc(it: ^Coverage_Iterator) -> (entry: Coverage_Format_E
 	if it.format == 1 {
 		// Format 1: List of individual glyph IDs
 		offset := it.coverage_offset + 4 + it.current_index * 2
-		if bounds_check(offset + 2 > uint(len(it.gsub.raw_data))) {
+		if bounds_check(offset + 2 > uint(len(it.data))) {
 			return {}, false
 		}
 
-		glyph_id := read_u16be(it.gsub.raw_data, offset)
+		glyph_id := read_u16be(it.data, offset)
 		entry = Coverage_Format1_Entry {
 			glyph = Raw_Glyph(glyph_id),
 			index = u16(it.current_index),
@@ -423,13 +430,13 @@ iter_coverage_entry :: proc(it: ^Coverage_Iterator) -> (entry: Coverage_Format_E
 	} else {
 		// Format 2: Ranges of glyph IDs
 		offset := it.coverage_offset + 4 + it.current_index * 6
-		if bounds_check(offset + 6 > uint(len(it.gsub.raw_data))) {
+		if bounds_check(offset + 6 > uint(len(it.data))) {
 			return {}, false
 		}
 
-		start_glyph := read_u16be(it.gsub.raw_data, offset)
-		end_glyph := read_u16be(it.gsub.raw_data, offset + 2)
-		start_coverage_index := read_u16be(it.gsub.raw_data, offset + 4)
+		start_glyph := read_u16be(it.data, offset)
+		end_glyph := read_u16be(it.data, offset + 2)
+		start_coverage_index := read_u16be(it.data, offset + 4)
 
 		entry = Coverage_Format2_Entry {
 			start       = Raw_Glyph(start_glyph),

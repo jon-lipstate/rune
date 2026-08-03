@@ -336,11 +336,21 @@ get_glyph_from_subtable :: proc(
 		f12, f12_ok := subtable.data.(^Format12)
 		if !f12_ok {return 0, false}
 
-		// Binary search through groups
-		left, right := uint(0), uint(f12.num_groups) - 1
+		// Binary search through groups.
+		//
+		// SIGNED bounds, deliberately. With `uint`, a codepoint below the first
+		// group drives `right = mid - 1` at mid 0, which underflows to the
+		// maximum uint -- `left <= right` is then true forever and the search
+		// spins reading garbage offsets. NotoSerifOttomanSiyaq hung the sweep
+		// this way on U+0020, whose format 12 table starts well above it. Format
+		// 4 has a hand-added `mid == 0` guard for the same bug; making the
+		// bounds signed fixes it at the source, and gives `right = -1` for an
+		// empty group list rather than a huge one.
+		if f12.num_groups == 0 {return 0, false}
+		left, right := 0, int(f12.num_groups) - 1
 		for left <= right {
 			mid := (left + right) / 2
-			group := get_format12_group(data, f12, mid)
+			group := get_format12_group(data, f12, uint(mid))
 
 			if codepoint > rune(group.end_char_code) {
 				left = mid + 1
@@ -360,11 +370,12 @@ get_glyph_from_subtable :: proc(
 		f13, f13_ok := subtable.data.(^Format13)
 		if !f13_ok {return 0, false}
 
-		// Binary search through groups
-		left, right := uint(0), uint(f13.num_groups) - 1
+		// Binary search through groups; signed for the reason on format 12.
+		if f13.num_groups == 0 {return 0, false}
+		left, right := 0, int(f13.num_groups) - 1
 		for left <= right {
 			mid := (left + right) / 2
-			group := get_format13_group(data, f13, mid)
+			group := get_format13_group(data, f13, uint(mid))
 
 			if codepoint > rune(group.end_char_code) {
 				left = mid + 1

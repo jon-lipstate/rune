@@ -36,13 +36,27 @@ get_pos_lookup_info :: proc(
 		ok = false
 		return
 	}
-	// FIXME: dedicate struct, prob existing.. ><
-	lookup_header := cast(^struct {
-		lookup_type:  GPOS_Lookup_Type,
-		lookup_flags: Lookup_Flags,
-	})&gpos.raw_data[abs_lookup_offset]
+	// Read the fields rather than casting the bytes to a struct.
+	//
+	// `lookupFlag` is a big-endian u16, and `Lookup_Flags` is
+	// {flags: u8 bit_set, mark_attachment_filter: u8}. Overlaying the two
+	// swaps them: a lookup flagged 0x0009 (RIGHT_TO_LEFT | IGNORE_MARKS) is
+	// stored as the bytes `00 09`, so `flags` read 0x00 and the mark
+	// attachment filter read 9.
+	//
+	// Every GPOS lookup therefore ran with NO flags: IGNORE_MARKS never
+	// skipped a mark, and RIGHT_TO_LEFT never reached the cursive applier that
+	// needs it to decide which glyph moves. GSUB has always decoded this
+	// correctly a few lines away in gsub_api.odin; only GPOS took the shortcut.
+	lookup_type = cast(GPOS_Lookup_Type)read_u16(gpos.raw_data, abs_lookup_offset)
+	raw_lookup_flags := read_u16(gpos.raw_data, abs_lookup_offset + 2)
 
-	return lookup_header.lookup_type, lookup_header.lookup_flags, abs_lookup_offset, true
+	lookup_flags = Lookup_Flags {
+		flags                  = transmute(Lookup_Flag_Set)(u8(raw_lookup_flags & 0x001F)),
+		mark_attachment_filter = u8((raw_lookup_flags >> 8) & 0xFF),
+	}
+
+	return lookup_type, lookup_flags, abs_lookup_offset, true
 }
 
 // Get kerning adjustment from a GPOS table's pair positioning (type 2)
@@ -318,6 +332,11 @@ get_kerning_from_pair_pos_format2 :: proc(
 	subtable_offset: uint,
 	first_glyph: Glyph,
 	second_glyph: Glyph,
+	// Pre-resolved class values, or negative to look them up here.
+	class1_in: i32 = -1,
+	class2_in: i32 = -1,
+	// The caller has already established the first glyph is covered.
+	assume_covered: bool = false,
 ) -> (
 	x_advance: i16,
 	y_advance: i16,
@@ -355,15 +374,25 @@ get_kerning_from_pair_pos_format2 :: proc(
 	// Size of a Class2Record
 	class2_record_size := value1_size + value2_size
 
-	// Check if the first glyph is in the coverage table
-	_, in_coverage := get_coverage_index(data, coverage_offset, first_glyph)
-	if !in_coverage {
-		return 0, 0, false
+	// Check if the first glyph is in the coverage table.
+	//
+	// Format 2 uses coverage only as a membership test -- the index is
+	// discarded, because the value record is found through the two CLASS
+	// values. So a caller with a memoised membership table can skip the binary
+	// search entirely.
+	if !assume_covered {
+		if _, in_coverage := get_coverage_index(data, coverage_offset, first_glyph);
+		   !in_coverage {
+			return 0, 0, false
+		}
 	}
 
-	// Get class values for both glyphs
-	class1 := get_class_value(data, class_def1_offset, first_glyph)
-	class2 := get_class_value(data, class_def2_offset, second_glyph)
+	// Get class values for both glyphs, unless the caller already resolved them.
+	// A class definition is font data at a fixed offset, so the answer is a
+	// property of (offset, glyph) -- and this is called once per glyph PAIR per
+	// subtable per shaping call, which made it 17% of a Latin paragraph.
+	class1 := class1_in >= 0 ? u16(class1_in) : get_class_value(data, class_def1_offset, first_glyph)
+	class2 := class2_in >= 0 ? u16(class2_in) : get_class_value(data, class_def2_offset, second_glyph)
 
 	// Check if classes are valid
 	if class1 >= class1_count || class2 >= class2_count {

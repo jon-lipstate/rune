@@ -5,6 +5,10 @@ Shaping_Buffer :: struct {
 	// Input text data
 	text:              string, // Original text
 	runes:             [dynamic]rune, // Unicode codepoints
+	// Scratch for font-aware normalization: the decomposed form, before it is
+	// recomposed back into `runes`. Lives on the buffer so normalizing does not
+	// allocate per shaping call.
+	norm:              [dynamic]rune,
 
 	// Output glyph data
 	glyphs:            [dynamic]Glyph_Info, // Output shaped glyphs
@@ -18,6 +22,37 @@ Shaping_Buffer :: struct {
 	// Cursor State Management
 	cursor:            int, // Current processing position
 	skip_mask:         u16be, // For mark filtering sets
+	// The filtering set resolved to a GDEF coverage table, once per lookup.
+	// See mark_filter.odin.
+	mark_filter_data:     []byte,
+	mark_filter_coverage: uint,
+	// GDEF's MarkGlyphSets, bound once per shaping call.
+	gdef_data:            []byte,
+	mark_sets_base:       uint,
+	// Bloom filter over every glyph currently in the buffer, rebuilt when the
+	// buffer changes. Lets a subtable be rejected with one AND against its own
+	// digest instead of a scan over every glyph.
+	digest:               [8]u32,
+	// Set whenever a substitution writes a glyph id or changes the length.
+	categories_dirty:     bool,
+	// Cursive attachment chain, child -> parent index (-1 for none). Lives on
+	// the buffer so cursive positioning does not allocate per shaping call.
+	// Does the buffer contain any Mark at all? Recomputed at the start of the
+	// GPOS pass, in the walk that builds the digest.
+	has_marks:            bool,
+	// Indices of every Mark in the buffer, collected in the same walk. The three
+	// mark-attachment types iterate this instead of the whole buffer: an Arabic
+	// run of 66 glyphs holds about 8 marks, and five MarkToBase lookups were
+	// visiting 330 positions to find 40.
+	mark_positions:       [dynamic]int,
+	cursive_parent:       [dynamic]int,
+	cursive_y:            [dynamic]i16,
+	// Mark attachment chain, mark -> the glyph it attached to (-1 for none).
+	// The offset a mark ends up with depends on the ADVANCES of everything
+	// between it and its base, and those are not final until every lookup has
+	// run -- so the attachment is recorded here and resolved once at the end of
+	// the GPOS pass. See `propagate_attachments`.
+	mark_parent:          [dynamic]int,
 	flags:             ttf.Lookup_Flags, // Current lookup flags
 
 	// Configuration
@@ -48,6 +83,16 @@ Glyph_Info :: struct {
 	category:            ttf.Glyph_Category,
 	flags:               Glyph_Flags,
 	ligature_components: Ligature_Info, // For ligatures and complex substitutions
+	// This glyph's category is stale: it was written by a substitution and has
+	// not been looked up in GDEF yet. Per GLYPH rather than per buffer, because
+	// refreshing every glyph after every substituting lookup was 447,006 glyph
+	// visits for a 371-rune paragraph -- the memo made each visit cheap and
+	// there were simply far too many of them.
+	needs_category:      bool,
+	// Which features apply HERE. See mask.odin -- positional features of
+	// cursive scripts apply to some letters and not others, and a shaper that
+	// applies features to whole runs cannot say so.
+	mask:                u32,
 }
 
 
@@ -150,6 +195,11 @@ destroy_shaping_buffer :: proc(buffer: ^Shaping_Buffer) {
 	delete(buffer.glyphs)
 	delete(buffer.positions)
 	delete(buffer.runes)
+	delete(buffer.norm)
+	delete(buffer.mark_positions)
+	delete(buffer.cursive_parent)
+	delete(buffer.cursive_y)
+	delete(buffer.mark_parent)
 
 	// Free the scratch arrays
 	delete(buffer.scratch.glyphs)

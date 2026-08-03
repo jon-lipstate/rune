@@ -149,7 +149,16 @@ get_coverage_index :: proc(
 		}
 
 		glyph_count := read_u16(data, coverage_offset + 2)
-		// fmt.printf("Format 1: Glyph count = %v\n", glyph_count)
+
+		// Bounds-check the WHOLE array once, not once per probe.
+		//
+		// This is the hottest leaf in the profile -- 18% of shaping, called per
+		// glyph per lookup from GPOS, which has no digest to reject with. The
+		// check was inside the loop, so a search over 200 glyphs paid eight
+		// bounds tests and eight branches to a `fmt.println` that never runs.
+		if bounds_check(coverage_offset + 4 + uint(glyph_count) * 2 > uint(len(data))) {
+			return 0, false
+		}
 
 		// Binary search for the glyph ID
 		low := 0
@@ -158,12 +167,6 @@ get_coverage_index :: proc(
 		for low <= high {
 			mid := (low + high) / 2
 			glyph_offset := coverage_offset + 4 + uint(mid) * 2
-
-			if bounds_check(glyph_offset + 2 > uint(len(data))) {
-				fmt.println("Bounds check failed in binary search")
-				return 0, false
-			}
-
 			current_glyph := cast(Raw_Glyph)read_u16be(data, glyph_offset)
 			// fmt.printf(
 			// 	"Comparing glyph %v at mid=%v (low=%v,high=%v)\n",

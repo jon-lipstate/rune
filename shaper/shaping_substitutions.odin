@@ -13,7 +13,6 @@ apply_single_substitution_subtable :: proc(
 	buffer: ^Shaping_Buffer,
 ) -> bool {
 	if buffer == nil || len(buffer.glyphs) == 0 {return false}
-
 	// Check format
 	if bounds_check(subtable_offset + 4 > uint(len(gsub.raw_data))) {return false}
 
@@ -28,7 +27,7 @@ apply_single_substitution_subtable :: proc(
 		glyph_id := buffer.glyphs[pos].glyph_id
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(buffer.glyphs[pos].category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, buffer.glyphs[pos].category, buffer.glyphs[pos].glyph_id, buffer.flags) {
 			continue
 		}
 
@@ -51,6 +50,8 @@ apply_single_substitution_subtable :: proc(
 
 			// Apply substitution
 			buffer.glyphs[pos].glyph_id = new_glyph_id
+			buffer.glyphs[pos].needs_category = true
+			buffer.categories_dirty = true
 			buffer.glyphs[pos].flags += {.Substituted}
 			changed = true
 
@@ -64,6 +65,8 @@ apply_single_substitution_subtable :: proc(
 
 			// Apply substitution
 			buffer.glyphs[pos].glyph_id = new_glyph_id
+			buffer.glyphs[pos].needs_category = true
+			buffer.categories_dirty = true
 			buffer.glyphs[pos].flags += {.Substituted}
 			changed = true
 		}
@@ -105,7 +108,7 @@ apply_multiple_substitution_subtable :: proc(
 		glyph := buffer.glyphs[pos]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 			continue
 		}
 
@@ -150,10 +153,12 @@ apply_multiple_substitution_subtable :: proc(
 		for i := 0; i < int(glyph_count); i += 1 {
 			glyph_id_offset := abs_sequence_offset + 2 + uint(i) * 2
 			replacement_glyph := Glyph(read_u16(gsub.raw_data, glyph_id_offset))
+			buffer.categories_dirty = true
 			gi := Glyph_Info {
 				glyph_id = replacement_glyph,
 				cluster  = glyph.cluster,
-				category = .Base, // Default category
+				category = .Base, // replaced below; see needs_category
+				needs_category = true,
 				flags    = {.Substituted, .Multiplied},
 			}
 			append(&buffer.scratch.glyphs, gi)
@@ -163,6 +168,8 @@ apply_multiple_substitution_subtable :: proc(
 
 		// Replace the current glyph with the first replacement
 		buffer.glyphs[pos].glyph_id = buffer.scratch.glyphs[0].glyph_id
+		buffer.glyphs[pos].needs_category = true
+		buffer.categories_dirty = true
 		buffer.glyphs[pos].flags += {.Substituted, .Multiplied}
 
 		// Insert any additional replacement glyphs
@@ -215,7 +222,7 @@ apply_alternate_substitution_subtable :: proc(
 		glyph := &buffer.glyphs[pos]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 			continue
 		}
 
@@ -268,6 +275,7 @@ apply_alternate_substitution_subtable :: proc(
 
 		// Apply the substitution
 		glyph.glyph_id = alternate_glyph
+		buffer.categories_dirty = true
 		glyph.flags += {.Substituted}
 		changed = true
 	}
@@ -305,7 +313,7 @@ apply_ligature_substitution_subtable :: proc(
 		first_glyph := &buffer.glyphs[pos]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(first_glyph.category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, first_glyph.category, first_glyph.glyph_id, buffer.flags) {
 			pos += 1
 			continue
 		}
@@ -459,11 +467,7 @@ match_ligature_sequence :: proc(
 		for curr_pos < len(buffer.glyphs) {
 			if curr_pos >= len(buffer.glyphs) {return false}
 
-			if !should_skip_glyph(
-				buffer.glyphs[curr_pos].category,
-				lookup_flags,
-				buffer.skip_mask,
-			) {break}
+			if !should_skip_glyph_in(buffer, buffer.glyphs[curr_pos].category, buffer.glyphs[curr_pos].glyph_id, lookup_flags) {break}
 			curr_pos += 1
 		}
 
@@ -513,6 +517,7 @@ apply_ligature_substitution :: proc(
 
 	// Replace the first glyph with the ligature
 	first_glyph.glyph_id = ligature_glyph
+	buffer.categories_dirty = true
 	first_glyph.cluster = min_cluster
 	first_glyph.category = .Ligature
 	first_glyph.flags += {.Substituted, .Ligated}
@@ -591,7 +596,7 @@ apply_context_format1 :: proc(
 		glyph := buffer.glyphs[pos]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 			continue
 		}
 
@@ -696,11 +701,7 @@ match_input_sequence :: proc(
 			if curr_pos >= len(buffer.glyphs) {return false}
 
 			// If we found a glyph that shouldn't be skipped, we'll process it
-			if !should_skip_glyph(
-				buffer.glyphs[curr_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[curr_pos].category, buffer.glyphs[curr_pos].glyph_id, buffer.flags) {
 				break skip
 			}
 
@@ -764,11 +765,7 @@ apply_substitutions :: proc(
 		curr_pos := context_start
 
 		for skip_count >= 0 && curr_pos < len(buffer.glyphs) {
-			if !should_skip_glyph(
-				buffer.glyphs[curr_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[curr_pos].category, buffer.glyphs[curr_pos].glyph_id, buffer.flags) {
 				if skip_count == 0 {
 					glyph_pos = curr_pos
 					break
@@ -790,11 +787,32 @@ apply_substitutions :: proc(
 		original_flags := buffer.flags
 		buffer.flags = lookup_flags
 
-		// Set cursor position to the glyph to be substituted
 		buffer.cursor = glyph_pos
 
-		// Apply the nested lookup
-		apply_lookup(gsub, lookup_index, lookup_type, lookup_flags, buffer)
+		// Apply the nested lookup AT THE POSITION the context named.
+		//
+		// `apply_lookup` walks the whole buffer and ignores the cursor, so
+		// using it here applied the substitution everywhere its coverage
+		// matched rather than where the context did.
+		#partial switch lookup_type {
+		case .Single:
+			subtable_iter, iter_ok := ttf.into_subtable_iter(gsub, lookup_index)
+			if iter_ok {
+				for sub_off in ttf.iter_subtable_offset(&subtable_iter) {
+					if apply_single_substitution_at(gsub, sub_off, buffer, glyph_pos) {
+						break // first subtable that matches wins
+					}
+				}
+			}
+		case:
+			// Other nested types still go through the buffer-wide path and are
+			// therefore still wrong in the same way. Single is what contextual
+			// rules overwhelmingly use -- both nested lookups in Noto Naskh's
+			// lam-alef rule are type 1 -- and guessing at the rest without a
+			// case to test against is how the last one got written.
+			note_unsupported_gsub(.Nested_Non_Single)
+			apply_lookup(gsub, lookup_index, lookup_type, lookup_flags, buffer)
+		}
 
 		// Restore original flags
 		buffer.flags = original_flags
@@ -840,7 +858,7 @@ apply_context_format2 :: proc(
 		glyph := buffer.glyphs[pos]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 			continue
 		}
 
@@ -963,11 +981,7 @@ match_input_class_sequence :: proc(
 		skip: for {
 			if curr_pos >= len(buffer.glyphs) {return false}
 
-			if !should_skip_glyph(
-				buffer.glyphs[curr_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[curr_pos].category, buffer.glyphs[curr_pos].glyph_id, buffer.flags) {
 				break skip
 			}
 
@@ -1040,7 +1054,7 @@ apply_context_format3 :: proc(
 			glyph := buffer.glyphs[glyph_pos]
 
 			// Skip if this glyph should be ignored based on lookup flags
-			if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+			if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 				// For format 3, we need to adjust matching position if we skip glyphs
 				sequence_matched = false
 				break
@@ -1135,7 +1149,7 @@ apply_chained_context_format1 :: proc(
 		glyph := buffer.glyphs[buffer.cursor]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 			continue
 		}
 
@@ -1324,7 +1338,7 @@ apply_chained_context_format2 :: proc(
 		glyph := buffer.glyphs[buffer.cursor]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {continue}
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {continue}
 
 		// Check if glyph is in the coverage table
 		_, in_coverage := ttf.get_coverage_index(
@@ -1530,7 +1544,7 @@ apply_chained_context_format3 :: proc(
 
 			glyph := buffer.glyphs[glyph_pos]
 			// Skip if this glyph should be ignored based on lookup flags
-			if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+			if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 				input_matched = false
 				break
 			}
@@ -1575,7 +1589,7 @@ apply_chained_context_format3 :: proc(
 				glyph := buffer.glyphs[backtrack_pos]
 
 				// Skip if this glyph should be ignored based on lookup flags
-				if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+				if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 					i -= 1 // Retry with previous position
 					continue
 				}
@@ -1620,7 +1634,7 @@ apply_chained_context_format3 :: proc(
 				glyph := buffer.glyphs[lookahead_pos]
 
 				// Skip if this glyph should be ignored based on lookup flags
-				if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {
+				if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {
 					lookahead_pos += 1
 					i -= 1 // Retry with next position
 					continue
@@ -1689,11 +1703,7 @@ match_backtrack_sequence :: proc(
 		for check_pos >= 0 {
 			if check_pos < 0 || check_pos >= len(buffer.glyphs) {return false}
 
-			if !should_skip_glyph(
-				buffer.glyphs[check_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[check_pos].category, buffer.glyphs[check_pos].glyph_id, buffer.flags) {
 				break
 			}
 
@@ -1733,11 +1743,7 @@ match_lookahead_sequence :: proc(
 		for curr_pos < len(buffer.glyphs) {
 			if curr_pos >= len(buffer.glyphs) {return false}
 
-			if !should_skip_glyph(
-				buffer.glyphs[curr_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[curr_pos].category, buffer.glyphs[curr_pos].glyph_id, buffer.flags) {
 				break
 			}
 
@@ -1770,7 +1776,7 @@ get_next_non_ignored_glyph_position :: proc(buffer: ^Shaping_Buffer, start_pos: 
 			return len(buffer.glyphs)
 		}
 
-		if !should_skip_glyph(buffer.glyphs[pos].category, buffer.flags, buffer.skip_mask) {
+		if !should_skip_glyph_in(buffer, buffer.glyphs[pos].category, buffer.glyphs[pos].glyph_id, buffer.flags) {
 			return pos
 		}
 
@@ -1800,11 +1806,7 @@ match_backtrack_class_sequence :: proc(
 		for check_pos >= 0 {
 			if check_pos < 0 || check_pos >= len(buffer.glyphs) {return false}
 
-			if !should_skip_glyph(
-				buffer.glyphs[check_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[check_pos].category, buffer.glyphs[check_pos].glyph_id, buffer.flags) {
 				break
 			}
 
@@ -1851,11 +1853,7 @@ match_lookahead_class_sequence :: proc(
 		for curr_pos < len(buffer.glyphs) {
 			if curr_pos >= len(buffer.glyphs) {return false}
 
-			if !should_skip_glyph(
-				buffer.glyphs[curr_pos].category,
-				buffer.flags,
-				buffer.skip_mask,
-			) {
+			if !should_skip_glyph_in(buffer, buffer.glyphs[curr_pos].category, buffer.glyphs[curr_pos].glyph_id, buffer.flags) {
 				break
 			}
 
@@ -2011,7 +2009,7 @@ apply_reverse_chained_subtable :: proc(
 		glyph := buffer.glyphs[pos]
 
 		// Skip if this glyph should be ignored based on lookup flags
-		if should_skip_glyph(glyph.category, buffer.flags, buffer.skip_mask) {continue}
+		if should_skip_glyph_in(buffer, glyph.category, glyph.glyph_id, buffer.flags) {continue}
 
 		// Check if the glyph is in the coverage table
 		coverage_index, in_coverage := ttf.get_coverage_index(
@@ -2038,11 +2036,7 @@ apply_reverse_chained_subtable :: proc(
 						break
 					}
 
-					if !should_skip_glyph(
-						buffer.glyphs[check_pos].category,
-						buffer.flags,
-						buffer.skip_mask,
-					) {
+					if !should_skip_glyph_in(buffer, buffer.glyphs[check_pos].category, buffer.glyphs[check_pos].glyph_id, buffer.flags) {
 						break
 					}
 
@@ -2094,11 +2088,7 @@ apply_reverse_chained_subtable :: proc(
 						break
 					}
 
-					if !should_skip_glyph(
-						buffer.glyphs[check_pos].category,
-						buffer.flags,
-						buffer.skip_mask,
-					) {
+					if !should_skip_glyph_in(buffer, buffer.glyphs[check_pos].category, buffer.glyphs[check_pos].glyph_id, buffer.flags) {
 						break
 					}
 
@@ -2160,6 +2150,8 @@ apply_reverse_chained_subtable :: proc(
 
 		// Apply the substitution
 		buffer.glyphs[pos].glyph_id = substitute_glyph
+		buffer.glyphs[pos].needs_category = true
+		buffer.categories_dirty = true
 		buffer.glyphs[pos].flags += {.Substituted}
 	}
 
@@ -2167,3 +2159,119 @@ apply_reverse_chained_subtable :: proc(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Apply a Single substitution to exactly ONE glyph.
+//
+// Nested lookups inside a contextual rule name a position: "apply lookup 2 at
+// input position 1". `apply_substitutions` set `buffer.cursor` and then called
+// `apply_lookup`, which iterates the whole buffer and does not read the cursor
+// -- so a nested Single substitution ran everywhere the coverage matched, not
+// where the context matched.
+//
+// The visible symptom was Arabic: the lam-alef rule correctly produced the
+// `.rlig` forms after a lam, and also converted every other alef in the
+// paragraph that had no lam before it at all.
+// MultipleSubst at ONE position, returning how many glyphs the buffer grew by.
+//
+// The nested-lookup path used to fall back to `apply_lookup`, which walks the
+// whole buffer -- so a contextual rule that decomposed one glyph decomposed
+// every glyph the lookup covered. In Noto Nastaliq Urdu that fires 412 times in
+// one line and is how the kashida filler glyphs are chosen.
+//
+// Layout: format u16 (=1), coverageOffset u16, sequenceCount u16,
+//         sequenceOffsets[] u16; Sequence is glyphCount u16 then the ids.
+apply_multiple_substitution_at :: proc(
+	gsub: ^ttf.GSUB_Table,
+	subtable_offset: uint,
+	buffer: ^Shaping_Buffer,
+	pos: int,
+) -> (
+	delta: int,
+	ok: bool,
+) {
+	data := gsub.raw_data
+	if buffer == nil || pos < 0 || pos >= len(buffer.glyphs) {return 0, false}
+	if bounds_check(subtable_offset + 6 > uint(len(data))) {return 0, false}
+	if read_u16(data, subtable_offset) != 1 {return 0, false}
+
+	abs_coverage := subtable_offset + uint(read_u16(data, subtable_offset + 2))
+	count := uint(read_u16(data, subtable_offset + 4))
+
+	glyph_id := buffer.glyphs[pos].glyph_id
+	idx, covered := ttf.get_coverage_index(data, abs_coverage, glyph_id)
+	if !covered || uint(idx) >= count {return 0, false}
+
+	seq_off_at := subtable_offset + 6 + uint(idx) * 2
+	if bounds_check(seq_off_at + 2 > uint(len(data))) {return 0, false}
+	seq := subtable_offset + uint(read_u16(data, seq_off_at))
+	if bounds_check(seq + 2 > uint(len(data))) {return 0, false}
+
+	n := uint(read_u16(data, seq))
+	if bounds_check(seq + 2 + n * 2 > uint(len(data))) {return 0, false}
+
+	buffer.categories_dirty = true
+
+	// An empty sequence is a deletion.
+	if n == 0 {
+		ordered_remove(&buffer.glyphs, pos)
+		return -1, true
+	}
+
+	cluster := buffer.glyphs[pos].cluster
+	buffer.glyphs[pos].glyph_id = Glyph(read_u16(data, seq + 2))
+	buffer.glyphs[pos].needs_category = true
+	buffer.glyphs[pos].flags += {.Substituted}
+	if n > 1 {buffer.glyphs[pos].flags += {.Multiplied}}
+
+	for i in 1 ..< n {
+		ttf.insert_at_elem(
+			&buffer.glyphs,
+			pos + int(i),
+			Glyph_Info {
+				needs_category = true,
+				glyph_id = Glyph(read_u16(data, seq + 2 + i * 2)),
+				cluster = cluster,
+				flags = {.Substituted, .Multiplied},
+			},
+		)
+	}
+	return int(n) - 1, true
+}
+
+apply_single_substitution_at :: proc(
+	gsub: ^ttf.GSUB_Table,
+	subtable_offset: uint,
+	buffer: ^Shaping_Buffer,
+	pos: int,
+) -> bool {
+	if buffer == nil || pos < 0 || pos >= len(buffer.glyphs) {return false}
+	if bounds_check(subtable_offset + 4 > uint(len(gsub.raw_data))) {return false}
+
+	format := read_u16(gsub.raw_data, subtable_offset)
+	coverage_offset := read_u16(gsub.raw_data, subtable_offset + 2)
+	abs_coverage := subtable_offset + uint(coverage_offset)
+
+	glyph_id := buffer.glyphs[pos].glyph_id
+	coverage_index, covered := ttf.get_coverage_index(gsub.raw_data, abs_coverage, glyph_id)
+	if !covered {return false}
+
+	switch format {
+	case 1:
+		delta := read_i16(gsub.raw_data, subtable_offset + 4)
+		buffer.glyphs[pos].glyph_id = Glyph(i16(glyph_id) + delta)
+		buffer.glyphs[pos].needs_category = true
+		buffer.categories_dirty = true
+		return true
+	case 2:
+		if bounds_check(subtable_offset + 6 > uint(len(gsub.raw_data))) {return false}
+		count := read_u16(gsub.raw_data, subtable_offset + 4)
+		if uint(coverage_index) >= uint(count) {return false}
+		at := subtable_offset + 6 + uint(coverage_index) * 2
+		if bounds_check(at + 2 > uint(len(gsub.raw_data))) {return false}
+		buffer.glyphs[pos].glyph_id = Glyph(read_u16(gsub.raw_data, at))
+		buffer.glyphs[pos].needs_category = true
+		buffer.categories_dirty = true
+		return true
+	}
+	return false
+}

@@ -45,9 +45,10 @@ get_glyph_accelerated :: proc(
 
 
 // Initialize the CMAP accelerator based on script
-build_cmap_accelerator :: proc(font: ^Font, cache: ^Shaping_Cache, script: Script_Tag) -> bool {
-	// Initialize the accelerator
-	accel := &cache.cmap_accel
+// Takes the accelerator, not the whole cache: it never depended on script,
+// language or features, and being handed a Shaping_Cache is what made it look
+// as though it might.
+build_cmap_accelerator_for :: proc(font: ^Font, accel: ^CMAP_Accelerator) -> bool {
 
 	// Get the cmap table
 	cmap_table, has_cmap := ttf.get_table(font, .cmap, ttf.load_cmap_table, ttf.CMAP_Table)

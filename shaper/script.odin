@@ -7,6 +7,7 @@ import ttf "../ttf"
 // Tags are encoded by [4]u8 into a u32 for faster compares
 Script_Tag :: enum u32 {
 	afak = 0x61_66_61_6B, // Afaka
+	adlm = 0x61_64_6C_6D, // Adlam
 	aghb = 0x61_67_68_62, // Caucasian Albanian
 	ahom = 0x61_68_6F_6D, // Ahom
 	arab = 0x61_72_61_62, // Arabic
@@ -21,6 +22,7 @@ Script_Tag :: enum u32 {
 	beng = 0x62_65_6E_67, // Bengali
 	bhks = 0x62_68_6B_73, // Bhaiksuki
 	blis = 0x62_6C_69_73, // Blissymbols
+	bng2 = 0x62_6E_67_32, // Bengali v2
 	bopo = 0x62_6F_70_6F, // Bopomofo
 	brah = 0x62_72_61_68, // Brahmi
 	brai = 0x62_72_61_69, // Braille
@@ -48,7 +50,9 @@ Script_Tag :: enum u32 {
 	elym = 0x65_6C_79_6D, // Elymaic
 	ethi = 0x65_74_68_69, // Ethiopic
 	geok = 0x67_65_6F_6B, // Khutsuri (Asomtavruli and Nuskhuri)
+	gara = 0x67_61_72_61, // Garay
 	geor = 0x67_65_6F_72, // Georgian (Mkhedruli and Mtavruli)
+	gjr2 = 0x67_6A_72_32, // Gujarati v2
 	glag = 0x67_6C_61_67, // Glagolitic
 	gong = 0x67_6F_6E_67, // Gunjala Gondi
 	gonm = 0x67_6F_6E_6D, // Masaram Gondi
@@ -56,6 +60,7 @@ Script_Tag :: enum u32 {
 	gran = 0x67_72_61_6E, // Grantha
 	grek = 0x67_72_65_6B, // Greek
 	gujr = 0x67_75_6A_72, // Gujarati
+	gur2 = 0x67_75_72_32, // Gurmukhi v2
 	guru = 0x67_75_72_75, // Gurmukhi
 	hang = 0x68_61_6E_67, // Hangul
 	hani = 0x68_61_6E_69, // Han (Hanzi, Kanji, Hanja)
@@ -80,12 +85,29 @@ Script_Tag :: enum u32 {
 	khmr = 0x6B_68_6D_72, // Khmer
 	khoj = 0x6B_68_6F_6A, // Khojki
 	kits = 0x6B_69_74_73, // Khitan small script
+	knd2 = 0x6B_6E_64_32, // Kannada v2
 	knda = 0x6B_6E_64_61, // Kannada
 	kore = 0x6B_6F_72_65, // Korean (Hangul + Han)
 	kpel = 0x6B_70_65_6C, // Kpelle
 	kthi = 0x6B_74_68_69, // Kaithi
 	lana = 0x6C_61_6E_61, // Tai Tham (Lanna)
 	laoo = 0x6C_61_6F_6F, // Lao
+
+	// OpenType script tags that are NOT the lowercased ISO 15924 code.
+	//
+	// OpenType pads a three-letter tag with SPACES; ISO 15924 repeats the last
+	// letter. So Lao is `Laoo` to Unicode and `lao ` to OpenType, and looking
+	// the font's script table up under `laoo` misses. Noto Sans Lao Looped has
+	// script tables for DFLT, `lao ` and `latn`, each pointing at a DIFFERENT
+	// `kern` feature record; falling through to DFLT silently used the wrong
+	// one and dropped a PairPos lookup.
+	//
+	// These are OT tags only -- nothing maps a codepoint to them. They are
+	// produced solely by `script_tag_chain`.
+	ot_lao = 0x6C_61_6F_20, // 'lao ' -- Lao
+	ot_nko = 0x6E_6B_6F_20, // 'nko ' -- N'Ko
+	ot_vai = 0x76_61_69_20, // 'vai ' -- Vai
+	ot_yi  = 0x79_69_20_20, // 'yi  ' -- Yi
 	latf = 0x6C_61_74_66, // Latin (Fraktur variant)
 	latg = 0x6C_61_74_67, // Latin (Gaelic variant)
 	latn = 0x6C_61_74_6E, // Latin
@@ -107,6 +129,7 @@ Script_Tag :: enum u32 {
 	mend = 0x6D_65_6E_64, // Mende Kikakui
 	merc = 0x6D_65_72_63, // Meroitic Cursive
 	mero = 0x6D_65_72_6F, // Meroitic Hieroglyphs
+	mlm2 = 0x6D_6C_6D_32, // Malayalam v2
 	mlym = 0x6D_6C_79_6D, // Malayalam
 	modi = 0x6D_6F_64_69, // Modi
 	mong = 0x6D_6F_6E_67, // Mongolian
@@ -127,6 +150,7 @@ Script_Tag :: enum u32 {
 	ogam = 0x6F_67_61_6D, // Ogham
 	olck = 0x6F_6C_63_6B, // Ol Chiki
 	orkh = 0x6F_72_6B_68, // Old Turkic
+	ory2 = 0x6F_72_79_32, // Oriya v2
 	orya = 0x6F_72_79_61, // Oriya
 	osge = 0x6F_73_67_65, // Osage
 	osma = 0x6F_73_6D_61, // Osmanya
@@ -170,6 +194,7 @@ Script_Tag :: enum u32 {
 	taml = 0x74_61_6D_6C, // Tamil
 	tang = 0x74_61_6E_67, // Tangut
 	tavt = 0x74_61_76_74, // Tai Viet
+	tel2 = 0x74_65_6C_32, // Telugu v2
 	telu = 0x74_65_6C_75, // Telugu
 	teng = 0x74_65_6E_67, // Tengwar
 	tfng = 0x74_66_6E_67, // Tifinagh
@@ -178,6 +203,7 @@ Script_Tag :: enum u32 {
 	thai = 0x74_68_61_69, // Thai
 	tibt = 0x74_69_62_74, // Tibetan
 	tirh = 0x74_69_72_68, // Tirhuta
+	tml2 = 0x74_6D_6C_32, // Tamil v2
 	ugar = 0x75_67_61_72, // Ugaritic
 	vaii = 0x76_61_69_69, // Vai
 	visp = 0x76_69_73_70, // Visible Speech
@@ -196,11 +222,6 @@ Script_Tag :: enum u32 {
 	zxxx = 0x7A_78_78_78, // Unwritten documents
 	zyyy = 0x7A_79_79_79, // Undetermined script
 	zzzz = 0x7A_7A_7A_7A, // Uncoded script
-}
-
-script_from_tag :: proc(tag: [4]u8) -> Script_Tag {
-	n := ttf.tag_to_u32(tag) // FIXME: move to shaper??
-	return cast(Script_Tag)n
 }
 
 // Map Unicode ranges to script tags
@@ -361,9 +382,29 @@ detect_script :: proc(codepoint: rune) -> Script_Tag {
 	return .zyyy // Common script (for punctuation, etc.)
 }
 
+// Horizontal direction of a script.
+//
+// This listed THREE right-to-left scripts -- Arabic, Hebrew, Syriac -- where
+// Unicode has more than thirty. Everything else fell through to left-to-right,
+// so `reverse_for_display` never ran for them and the glyphs came out in
+// logical order: the right glyphs, backwards.
+//
+// It was invisible because the corpus tested Arabic and nothing else RTL. A
+// sweep over the installed fonts found it in Lydian, Cypriot, Imperial Aramaic,
+// Inscriptional Pahlavi, Inscriptional Parthian and Elymaic at once -- the
+// archaic right-to-left scripts nobody writes a test for.
+//
+// The list matches HarfBuzz's `hb_script_get_horizontal_direction`.
 get_script_direction :: proc(script: Script_Tag) -> Direction {
 	#partial switch script {
-	case .arab, .hebr, .syrc:
+	case
+		.arab, .aran, .hebr, .syrc, .thaa, .nkoo,
+		.samr, .mand, .cprt, .khar, .phnx, .lydi,
+		.avst, .armi, .phli, .prti, .sarb, .orkh,
+		.merc, .mero, .mani, .mend, .nbat, .narb,
+		.palm, .phlp, .hatr, .adlm, .rohg, .hung,
+		.sogo, .sogd, .elym, .chrs, .yezi, .ougr,
+		.gara:
 		return .Right_To_Left
 	case:
 		return .Left_To_Right
@@ -375,36 +416,6 @@ Script_Run :: struct {
 	length: int, // Number of characters
 	script: Script_Tag, // Script tag
 }
-
-detect_script_runs :: proc(text: []rune) -> []Script_Run {
-	if len(text) == 0 {
-		return nil
-	}
-
-	runs := make([dynamic]Script_Run)
-	current_script := detect_script(text[0])
-	start_index := 0
-
-	for i := 1; i < len(text); i += 1 {
-		script := detect_script(text[i])
-		if script != current_script {
-			append(
-				&runs,
-				Script_Run{start = start_index, length = i - start_index, script = current_script},
-			)
-			current_script = script
-			start_index = i
-		}
-	}
-
-	append(
-		&runs,
-		Script_Run{start = start_index, length = len(text) - start_index, script = current_script},
-	)
-
-	return runs[:]
-}
-
 
 find_language_system_gsub :: proc(
 	gsub: ^ttf.GSUB_Table,
@@ -436,6 +447,23 @@ find_language_system_gpos :: proc(
 	return find_language_system_in_table(gpos.raw_data, script_list_offset, script, language)
 }
 
+// The four bytes of a tag, taken from the enum's VALUE.
+//
+// `enum_tag_into_string` reads the member's NAME instead, which works only
+// while every name is spelled exactly like its tag. It cannot be: OpenType pads
+// a three-letter tag with SPACES (`lao `, `nko `, `vai `, `yi  `) and Odin has
+// no identifier for that, and `case` is an Odin keyword so the `case` feature is
+// declared `Case`. Every such tag was unmatchable -- Noto Sans Lao Looped has a
+// `lao ` script table selecting a different `kern` feature record than its
+// DFLT, and runic silently took DFLT.
+//
+// Every other member's name already equals its value, so reading the value is
+// behaviour-preserving for them.
+@(private)
+tag_bytes :: proc "contextless" (v: u32) -> [4]u8 {
+	return {u8(v >> 24), u8(v >> 16), u8(v >> 8), u8(v)}
+}
+
 // Calls into GSUB or GPOS Table
 find_language_system_in_table :: proc(
 	data: []byte,
@@ -459,7 +487,7 @@ find_language_system_in_table :: proc(
 	script_found := false
 	script_record_ptr: ^ttf.OpenType_Script_Record = nil
 
-	target_script_tag := enum_tag_into_string(script)
+	target_script_tag := tag_bytes(u32(script))
 
 	for i in 0 ..< script_count {
 		record := &script_records_ptr[i]
@@ -501,7 +529,7 @@ find_language_system_in_table :: proc(
 	lang_sys_offset_value: uint = 0
 
 	if language != .dflt {
-		target_lang_tag := enum_tag_into_string(language)
+		target_lang_tag := tag_bytes(u32(language))
 		lang_sys_count := cast(u16)script_table_ptr.lang_sys_count
 		lang_sys_records_ptr := cast([^]ttf.OpenType_LangSys_Record)&data[script_offset + size_of(ttf.Offset16) + size_of(u16be)]
 

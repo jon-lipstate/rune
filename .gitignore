@@ -5,6 +5,13 @@
 *.txt
 *.xml
 *.py
+
+# The Unicode data and the generator are INPUTS to text/tables.odin, which is a
+# generated 268 KiB artifact. Ignoring them keeps the output while losing the
+# ability to regenerate or re-verify it -- including the `@missing` header
+# parsing that two separate bugs traced back to.
+!text/ucd/*.txt
+!text/tools/*.py
 *.rdbg
 .VSCodeCounter/
 scraper/

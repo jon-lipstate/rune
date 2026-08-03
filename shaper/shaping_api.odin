@@ -1,5 +1,6 @@
 package shaper
 
+import "core:time"
 import ttf "../ttf"
 import "core:fmt"
 
@@ -71,9 +72,33 @@ shape_with_cache :: proc(
 ) {
 	if buffer == nil {return false}
 
+	when #config(GSUBTIME, false) {t := time.tick_now()}
+	// Normalize against what the font can draw, BEFORE the cmap sees anything.
+	// See shaper/normalize.odin: this is not plain NFC, it asks the font.
+	normalize_for_font(font, cache != nil ? cache.fc : nil, buffer)
+
+	// Brahmic reordering, before the cmap: a pre-base matra is stored after its
+	// consonant and drawn before it, and no OpenType lookup can express that --
+	// the shaper has to move it so the font's lookups see the visual order.
+	if cache != nil && is_indic_script(cache.key.script) {reorder_indic(buffer)}
+
 	// Map runes to initial glyphs (1:1 mapping)
 	reserve(&buffer.glyphs, len(buffer.runes))
 	map_runes_to_glyphs(font, buffer, cache)
+	when #config(GSUBTIME, false) {
+		phase_ns[.Map] += time.duration_nanoseconds(time.tick_since(t));t = time.tick_now()
+	}
+
+	// Which features apply where. For a non-cursive script this is one pass
+	// setting MASK_GLOBAL and nothing else changes.
+	assign_joining_masks(buffer, buffer.script)
+	when #config(GSUBTIME, false) {
+		phase_ns[.Masks] += time.duration_nanoseconds(time.tick_since(t));t = time.tick_now()
+	}
+	bind_mark_sets(font, buffer)
+	when #config(GSUBTIME, false) {
+		phase_ns[.MarkSets] += time.duration_nanoseconds(time.tick_since(t));t = time.tick_now()
+	}
 
 	// If cache couldn't be created, fall back to basic shaping
 	if cache == nil {
@@ -83,41 +108,71 @@ shape_with_cache :: proc(
 	// Apply substitutions (GSUB)
 	gsub, has_gsub := ttf.get_table(font, .GSUB, ttf.load_gsub_table, ttf.GSUB_Table)
 	if has_gsub && len(cache.gsub_lookups) > 0 {
-		// Check if we have acceleration structures built
-		if len(cache.gsub_accel.single_subst) > 0 || len(cache.gsub_accel.ligature_subst) > 0 {
-			apply_gsub_with_accelerator(font, buffer, cache)
-		} else {
-			// Fall back to standard lookup application
-			apply_gsub_lookups(gsub, cache.gsub_lookups, buffer)
-		}
+		// Always the accelerated path now. The old test -- "are there any
+		// single or ligature accelerators yet" -- was answering a question
+		// about EAGER construction, and with lazy construction the answer is
+		// always "not yet" on the first call. It also chose all-or-nothing for
+		// the whole plan on the presence of two lookup types out of seven.
+		// `apply_gsub_with_accelerator` falls back per lookup, which is the
+		// granularity the decision actually has.
+		apply_gsub_with_accelerator(font, buffer, cache)
+	}
+	when #config(GSUBTIME, false) {
+		phase_ns[.GSUB] += time.duration_nanoseconds(time.tick_since(t));t = time.tick_now()
 	}
 
 	// for gi in buffer.glyphs {fmt.printf("%v -> %v \n", buffer.runes[gi.cluster], gi.glyph_id)}
 
-	// Allocate and initialize glyph positions
-	resize(&buffer.positions, len(buffer.glyphs))
-
-	// Initialize positions with zero values
-	for i := 0; i < len(buffer.positions); i += 1 {
-		buffer.positions[i] = Glyph_Position {
-			x_advance = 0,
-			y_advance = 0,
-			x_offset  = 0,
-			y_offset  = 0,
-		}
-	}
-
-	// Apply basic positioning first
+	// `apply_basic_positioning` resizes `positions` and writes every element
+	// unconditionally, so the resize and the zeroing loop that used to be here
+	// were both dead: one pass over the glyphs to write zeros, immediately
+	// followed by a pass writing the real values over them.
 	apply_basic_positioning(font, buffer, cache)
+	when #config(GSUBTIME, false) {
+		phase_ns[.BasicPos] += time.duration_nanoseconds(time.tick_since(t));t = time.tick_now()
+	}
 
 	// Apply positioning (GPOS)
 	gpos, has_gpos := ttf.get_table(font, .GPOS, ttf.load_gpos_table, ttf.GPOS_Table)
 	if has_gpos && len(cache.gpos_lookups) > 0 {
 		// Apply positioning lookups from the cache
-		apply_positioning_lookups(gpos, cache.gpos_lookups, buffer)
+		apply_positioning_lookups(
+			gpos,
+			cache.gpos_lookups,
+			buffer,
+			cache.fc,
+			zero_marks_policy(cache.key.script),
+		)
 	}
 
+	when #config(GSUBTIME, false) {
+		phase_ns[.GPOS] += time.duration_nanoseconds(time.tick_since(t));t = time.tick_now()
+	}
+	// After positioning, before display order: the ignorables have done their
+	// job (ZWJ and ZWNJ change how their neighbours join) and must not be drawn.
+	hide_default_ignorables(font, cache != nil ? cache.fc : nil, buffer)
+
+	reverse_for_display(buffer)
+	when #config(GSUBTIME, false) {
+		phase_ns[.Reverse] += time.duration_nanoseconds(time.tick_since(t))
+	}
 	return true
+}
+
+// Put a right-to-left run into visual order, once, after all substitution and
+// positioning is done. Everything above this point works in logical order,
+// which is what OpenType lookups are written against.
+reverse_for_display :: proc(buffer: ^Shaping_Buffer) {
+	if buffer.direction != .Right_To_Left {return}
+	n := len(buffer.glyphs)
+	for i in 0 ..< n / 2 {
+		buffer.glyphs[i], buffer.glyphs[n - 1 - i] = buffer.glyphs[n - 1 - i], buffer.glyphs[i]
+	}
+	m := len(buffer.positions)
+	for i in 0 ..< m / 2 {
+		buffer.positions[i], buffer.positions[m - 1 - i] =
+			buffer.positions[m - 1 - i], buffer.positions[i]
+	}
 }
 
 shape_text_basic_with_buffer :: proc(font: ^Font, buffer: ^Shaping_Buffer) -> (ok: bool) {

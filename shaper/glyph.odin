@@ -8,31 +8,41 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 	// Ensure we have enough capacity in the glyphs array
 	reserve(&buffer.glyphs, len(buffer.runes))
 
-	// Get GDEF table if available
-	gdef, has_gdef := ttf.get_table(font, .GDEF, ttf.load_gdef_table, ttf.GDEF_Table)
+	// GDEF is OPTIONAL in OpenType, and a great many fonts ship without one --
+	// the URW/Ghostscript families among them. This used to `assert(has_gdef)`,
+	// which turned "font has no GDEF" into a hard abort on the 138th font of a
+	// sweep over the installed corpus.
+	//
+	// Nothing downstream needs it to exist: `determine_glyph_category` and
+	// `get_glyph_class` both return sensibly for a nil table, and the codepoint
+	// rules are the fallback for exactly this case.
+	gdef, _ := ttf.get_table(font, .GDEF, ttf.load_gdef_table, ttf.GDEF_Table)
 
-	// -vet said it was unused, but without it we can't call determine_glyph_category
-	// Perhaps `map_runes_to_glyphs` should return an error?
-	// Alternatively, if an OTF/TTF *must* contain this table, we can sanity check its existence when loading a font,
-	// so we can remove this return value.
-	assert(has_gdef)
-
-	// Determine if we need to process in visual RTL order
-	is_rtl := buffer.direction == .Right_To_Left
+	// Mapping is always in LOGICAL order, whatever the direction.
+	//
+	// This used to walk RTL text backwards so the buffer came out in visual
+	// order before GSUB ran. That is why no contextual lookup ever matched for
+	// Arabic: the font's rules are written in logical order -- lam-alef is
+	// `uni0644.init` followed by `uni0627.fina` -- and a reversed buffer
+	// presents that pair backwards. The positional features still worked,
+	// because masks are per glyph and do not care about order, which is why
+	// the output looked nearly right and was not.
+	//
+	// HarfBuzz reverses at the very end, after GSUB and GPOS, purely for
+	// display (`hb-ot-shape.cc`, hb_ot_position_plan then hb_buffer_reverse).
+	// So does this now; see reverse_for_display in shaping_api.odin.
 
 	// Check if we have an accelerator
-	has_accelerator := cache != nil && len(cache.cmap_accel.sparse_map) > 0
+	has_accelerator := cache != nil && cache.fc != nil && len(cache.fc.cmap_accel.sparse_map) > 0
 
 	// First pass: Map runes to glyphs with basic properties
 	for idx: uint = 0; idx < uint(len(buffer.runes)); idx += 1 {
-		// Calculate logical index based on text direction
-		i := is_rtl ? uint(len(buffer.runes)) - 1 - idx : idx
+		i := idx
 
 		codepoint := buffer.runes[i]
 		next_codepoint: rune = 0
 
-		// Calculate the adjacent index based on text direction
-		next_i := is_rtl ? i - 1 : i + 1
+		next_i := i + 1
 
 		// Look ahead for variation selectors
 		if next_i < uint(len(buffer.runes)) && next_i >= 0 {
@@ -48,7 +58,7 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 				// Use accelerator if available
 				if has_accelerator {
 					var_gid, var_found = get_glyph_accelerated(
-						&cache.cmap_accel,
+						&cache.fc.cmap_accel,
 						codepoint,
 						next_codepoint,
 					)
@@ -66,7 +76,7 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 					glyph_info := Glyph_Info {
 						glyph_id = var_gid,
 						cluster  = i,
-						category = ttf.determine_glyph_category(gdef, var_gid, codepoint),
+						category = glyph_category_cp(cache != nil ? cache.fc : nil, gdef, var_gid, codepoint),
 						flags    = {},
 					}
 					append(&buffer.glyphs, glyph_info)
@@ -85,7 +95,7 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 
 		// Use accelerator if available
 		if has_accelerator {
-			gid, ok = get_glyph_accelerated(&cache.cmap_accel, codepoint)
+			gid, ok = get_glyph_accelerated(&cache.fc.cmap_accel, codepoint)
 		} else {
 			gid, ok = ttf.get_glyph_from_cmap(font, codepoint)
 		}
@@ -105,9 +115,7 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 		// Check if this is a mark that needs a dotted circle
 		needs_dotted_circle := false
 		if .Do_Not_Insert_Dotted_Circle not_in buffer.control_flags {
-			// For RTL text, need to check the previous character which is actually
-			// the next index in the logical order
-			prev_i := is_rtl ? i + 1 : i - 1
+			prev_i := i - 1
 
 			if ttf.unichar_is_mark(codepoint) &&
 			   (i == 0 ||
@@ -125,7 +133,7 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 			// Use accelerator if available
 			if has_accelerator {
 				dotted_circle_gid, has_dotted_circle = get_glyph_accelerated(
-					&cache.cmap_accel,
+					&cache.fc.cmap_accel,
 					0x25CC,
 				)
 			} else {
@@ -147,15 +155,13 @@ map_runes_to_glyphs :: proc(font: ^Font, buffer: ^Shaping_Buffer, cache: ^Shapin
 		glyph_info := Glyph_Info {
 			glyph_id = ok ? gid : 0, // Use 0 (missing glyph) if not found
 			cluster  = i,
-			category = ttf.determine_glyph_category(gdef, gid, codepoint),
+			category = glyph_category_cp(cache != nil ? cache.fc : nil, gdef, gid, codepoint),
 			flags    = is_default_ignorable ? {.Default_Ignorable} : {},
 		}
 
 		append(&buffer.glyphs, glyph_info)
 	}
 
-	// If RTL, the glyphs are now in reverse order of the original text
-	// This is correct for display but we need to fix the clustering
 
 	// Second pass: Apply buffer-wide processing
 	if .Remove_Default_Ignorables in buffer.control_flags {

@@ -3,15 +3,22 @@ package shaper
 import ttf "../ttf"
 
 Latin_Default_Features := create_feature_set(.ccmp, .liga, .clig)
-Arabic_Default_Features := create_feature_set(.init, .fina, .medi, .rlig)
+// `isol` was missing: HarfBuzz requests all four form features, and a font
+// that substitutes an isolated form through `isol` got nothing.
+Arabic_Default_Features := create_feature_set(.isol, .init, .fina, .medi, .rlig)
 Devanagari_Default_Features := create_feature_set(.ccmp, .nukt, .akhn, .half)
 
 get_default_features :: proc(script: Script_Tag) -> Feature_Set {
+	// The form features are wanted by every cursive script, not just Arabic --
+	// and this is the gate that actually decides it, because stages 2-5 are
+	// past `Arabic_Required_Stages` and so are applied only when requested.
+	if is_joining_script(script) {
+		return Arabic_Default_Features
+	}
+
 	#partial switch script {
 	case .latn, .latf, .latg:
 		return Latin_Default_Features
-	case .arab, .aran:
-		return Arabic_Default_Features
 	case .deva, .dev2:
 		return Devanagari_Default_Features
 	// Add more scripts as needed
@@ -31,11 +38,17 @@ get_script_feature_stages :: proc(
 	stages: [][]Feature_Tag,
 	required_stages: int,
 ) {
+	// Every cursive script needs the form features, not just Arabic. Adlam,
+	// Syriac and Hanifi Rohingya were falling through to the Latin stages,
+	// which request no `isol`/`init`/`medi`/`fina` at all -- so their glyphs
+	// came out in isolated form regardless of what the joining masks said.
+	if is_joining_script(script) {
+		return Arabic_Feature_Stages, Arabic_Required_Stages
+	}
+
 	#partial switch script {
 	case .latn, .latf, .latg:
 		return Latin_Feature_Stages, Latin_Required_Stages
-	case .arab, .aran:
-		return Arabic_Feature_Stages, Arabic_Required_Stages
 	case .deva, .dev2:
 		return Devanagari_Feature_Stages, Devanagari_Required_Stages
 	// TODO: other script sets
@@ -54,12 +67,38 @@ Latin_Feature_Stages := [][]Feature_Tag {
 	{.salt, .ss01, .ss02}, // Stage 6: Stylistic sets
 }
 
+// Ordered to match HarfBuzz's Arabic shaper (hb-ot-shaper-arabic.cc,
+// collect_features_arabic), which is the de facto specification.
+//
+// Two things were wrong here, not one:
+//
+//   * `rlig` ran in the required stage, BEFORE the form features. Arabic
+//     required ligatures match on the positional forms -- lam-alef is a
+//     context of `uni0644.init` followed by `uni0627.fina` -- so it saw base
+//     glyphs and matched nothing. HarfBuzz's own comment: "The pause between
+//     init/medi/... and rlig is required."
+//
+//   * The form features ran in the order isol, init, medi, fina. HarfBuzz
+//     applies them isol, fina, medi, init, EACH AS ITS OWN STAGE with a pause
+//     between. Order matters because a later form feature may match on what an
+//     earlier one produced.
+//
+// Setting this correctly makes the differential against HarfBuzz worse before
+// it makes it better -- contextual lookups start firing and expose bugs in the
+// context matching that were previously unreachable. That is the ordering
+// doing its job.
 Arabic_Feature_Stages := [][]Feature_Tag {
-	{.rlig, .ccmp}, // Stage 1: Required
-	{.isol, .init, .medi, .fina}, // Stage 2: Form features
-	{.liga}, // Stage 3: Ligatures
-	{.mset}, // Stage 4: Mark positioning
+	{.ccmp, .locl}, // Stage 1: composition, localisation
+	{.isol}, // Stages 2-5: form features, one per stage, in HarfBuzz's order
+	{.fina},
+	{.medi},
+	{.init},
+	{.rlig}, // Stage 6: required ligatures, on the FORMED glyphs
+	{.calt}, // Stage 7: contextual alternates
+	{.liga, .clig}, // Stage 8: discretionary ligatures
+	{.mset}, // Stage 9: mark positioning
 }
+
 Devanagari_Feature_Stages := [][]Feature_Tag {
 	{.ccmp}, // Stage 1: Composition/decomposition
 	{.locl}, // Stage 2: Localized forms
@@ -110,6 +149,11 @@ collect_feature_lookups :: proc(
 	lookup_list_offset: uint,
 	processed_lookups: ^Lookup_Set,
 	lookup_indices: ^[dynamic]u16,
+	// Parallel to lookup_indices: the mask of the feature that selected each.
+	// Recorded here because this is the only place the association exists --
+	// by the time a plan holds a flat list of lookup indices, which feature
+	// asked for which is gone.
+	lookup_masks: ^[dynamic]u32,
 ) -> bool {
 	if feature_count <= 0 {return false}
 	applied_features: Feature_Set
@@ -117,6 +161,11 @@ collect_feature_lookups :: proc(
 	// First, process features in stages (ordered processing)
 	for stage, stage_idx in feature_stages {
 		// fmt.printf("Processing Stage %2d %v\n", stage_idx, stage)
+		// Within a stage, lookups run in LOOKUP INDEX order, not in the order
+		// the features that selected them happen to be listed. See
+		// `sort_stage_lookups`.
+		stage_start := len(lookup_indices)
+
 		// Process each feature in this stage
 		for stage_feature in stage {
 			// For required stages, we always apply these features if they exist
@@ -135,12 +184,15 @@ collect_feature_lookups :: proc(
 					lookup_list_offset,
 					processed_lookups,
 					lookup_indices,
+					lookup_masks,
 				)
 			}
 		}
+		sort_stage_lookups(lookup_indices, lookup_masks, stage_start)
 	}
 
 	// Now process any remaining requested features that weren't handled by stages
+	extra_start := len(lookup_indices)
 	for feature_tag in Feature_Tag {
 		if feature_set_contains(features_to_apply, feature_tag) &&
 		   !feature_set_contains(&applied_features, feature_tag) {
@@ -154,13 +206,56 @@ collect_feature_lookups :: proc(
 				lang_sys_offset,
 				feature_list_offset,
 				lookup_list_offset,
-				processed_lookups,
-				lookup_indices,
+					processed_lookups,
+					lookup_indices,
+					lookup_masks,
 			)
 		}
 	}
+	sort_stage_lookups(lookup_indices, lookup_masks, extra_start)
 
 	return true
+}
+
+// Order one stage's lookups by lookup index.
+//
+// A stage's features are alternatives to each other, but the lookups they name
+// are NOT: the font orders its lookup list deliberately, and a lookup with a
+// lower index is meant to run first. Collecting them in the order the FEATURES
+// happen to be listed reverses that whenever a later feature names an earlier
+// lookup. HarfBuzz sorts each stage's slice for exactly this reason
+// (`hb-ot-map.cc:365`).
+//
+// Noto Sans Kannada showed it: `abvm` names lookup 7 (MarkToBase) and a
+// contextual rule reaches lookup 1 (SinglePos, y -98) on the nukta. Sorted, the
+// SinglePos runs first and MarkToBase overwrites the offset with the anchor
+// result; unsorted, the SinglePos ran last and its -98 survived. Mark
+// attachment ASSIGNS rather than accumulates, so which one runs last is the
+// whole answer.
+//
+// Insertion sort: a stage holds a handful of lookups, and it is stable, so
+// lookups that somehow share an index keep their collected order.
+@(private)
+sort_stage_lookups :: proc(indices: ^[dynamic]u16, masks: ^[dynamic]u32, from: int) {
+	n := len(indices)
+	if from < 0 || n - from < 2 {return}
+	// The masks are parallel to the indices; if that ever stops being true,
+	// reordering them together would corrupt the association rather than
+	// preserve it.
+	with_masks := masks != nil && len(masks) == n
+
+	for i in from + 1 ..< n {
+		vi := indices[i]
+		vm: u32 = with_masks ? masks[i] : 0
+		j := i - 1
+		for j >= from && indices[j] > vi {
+			indices[j + 1] = indices[j]
+			if with_masks {masks[j + 1] = masks[j]}
+			j -= 1
+		}
+		indices[j + 1] = vi
+		if with_masks {masks[j + 1] = vm}
+	}
 }
 
 process_feature :: proc(
@@ -172,6 +267,11 @@ process_feature :: proc(
 	lookup_list_offset: uint,
 	processed_lookups: ^Lookup_Set,
 	lookup_indices: ^[dynamic]u16,
+	// Parallel to lookup_indices: the mask of the feature that selected each.
+	// Recorded here because this is the only place the association exists --
+	// by the time a plan holds a flat list of lookup indices, which feature
+	// asked for which is gone.
+	lookup_masks: ^[dynamic]u32,
 ) {
 	// Find this feature in the language system
 	for i := 0; i < int(feature_count); i += 1 {
@@ -204,10 +304,25 @@ process_feature :: proc(
 			if !ok {continue}
 
 			for lookup_index in ttf.iter_lookup_index(&lookup_iter) {
+				m := feature_mask(feature_tag)
 				if !lookup_set_contains(processed_lookups, lookup_index) {
-					// fmt.printf("Adding Lookup Index %v for %v\n", lookup_index, feature_tag)
 					lookup_set_add(processed_lookups, lookup_index)
 					append(lookup_indices, lookup_index)
+					append(lookup_masks, m)
+					continue
+				}
+				// Already collected by an EARLIER feature, and that is not a
+				// reason to drop this one's claim on it. Fonts share lookups
+				// between features routinely -- in Noto Naskh Arabic, `init`
+				// and `medi` are both lookup 4 -- and taking only the first
+				// mask means the lookup never applies in the second feature's
+				// positions. Whichever feature came first won, so reordering
+				// the stages moved the bug rather than fixing it.
+				for li, i in lookup_indices^ {
+					if li == lookup_index {
+						lookup_masks[i] |= m
+						break
+					}
 				}
 			}
 		}

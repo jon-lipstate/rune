@@ -47,27 +47,6 @@ apply_standard_lookup_at_offset :: proc(
 }
 
 
-// Apply a sequence of lookups to shape text
-apply_gsub_lookups :: proc(gsub: ^ttf.GSUB_Table, lookup_indices: []u16, buffer: ^Shaping_Buffer) {
-	if gsub == nil || len(lookup_indices) == 0 || buffer == nil || len(buffer.glyphs) == 0 {
-		return
-	}
-
-	// Process each lookup in order
-	for lookup_index in lookup_indices {
-		// Get lookup information
-		lookup_type, lookup_flags, _, ok := ttf.get_lookup_info(gsub, lookup_index)
-		if !ok {continue} // TODO(Jeroen): Can this be replaced with `or_continue`?
-
-		// Save original flags and update with current lookup flags
-		saved_flags := buffer.flags
-		buffer.flags = lookup_flags
-		apply_lookup(gsub, lookup_index, lookup_type, lookup_flags, buffer)
-
-		buffer.flags = saved_flags
-	}
-}
-
 // Apply a single lookup to the buffer
 apply_lookup :: proc(
 	gsub: ^ttf.GSUB_Table,
@@ -90,12 +69,16 @@ apply_lookup :: proc(
 	if .USE_MARK_FILTERING_SET in lookup_flags.flags {
 		mark_set, has_filter := ttf.get_mark_filtering_set(&subtable_iter)
 		if has_filter {
-			// Store the mark filtering set in buffer for use during processing
 			buffer.skip_mask = mark_set
-			// fmt.println("Has mark filtering set (u16 cast:)", u16(mark_set))
+			// Resolve once per lookup, not per glyph.
+			buffer.mark_filter_data, buffer.mark_filter_coverage = resolve_mark_filter(
+				buffer,
+				u16(mark_set),
+			)
 		}
 	} else {
 		buffer.skip_mask = 0
+		buffer.mark_filter_data, buffer.mark_filter_coverage = nil, 0
 	}
 
 	// Process each subtable
@@ -139,6 +122,10 @@ should_skip_glyph :: proc(
 	flags: ttf.Lookup_Flags,
 	skip_mask: u16be = 0,
 ) -> bool {
+	// NOTE: this overload cannot honour a mark filtering set -- it has no
+	// buffer and so no resolved coverage. Callers inside a lookup should use
+	// `should_skip_glyph_in`, which does. Kept for the sites that have no
+	// buffer to hand.
 	if .IGNORE_BASE_GLYPHS in flags.flags && gc == .Base {
 		return true
 	}
@@ -151,11 +138,24 @@ should_skip_glyph :: proc(
 		return true
 	}
 
-	// Handle mark filtering set if specified
-	if .USE_MARK_FILTERING_SET in flags.flags && gc == .Mark {
-		// FIXME: Implement mark filtering set logic
-		// Currently just returning false to not skip
-	}
+	return false
+}
 
+// The same test, with the buffer available so a mark filtering set can be
+// honoured.
+//
+// USE_MARK_FILTERING_SET skips every mark EXCEPT those in the named set -- the
+// reverse of what the name suggests, and the reason the old FIXME (skip
+// nothing) was not a safe default but an over-application.
+should_skip_glyph_in :: proc(
+	buffer: ^Shaping_Buffer,
+	gc: ttf.Glyph_Category,
+	g: Glyph,
+	flags: ttf.Lookup_Flags,
+) -> bool {
+	if should_skip_glyph(gc, flags, buffer.skip_mask) {return true}
+	if .USE_MARK_FILTERING_SET in flags.flags && gc == .Mark {
+		return !in_mark_filter(buffer, g)
+	}
 	return false
 }
