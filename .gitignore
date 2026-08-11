@@ -19,3 +19,6 @@ scraper/
 *.spall
 *.rdi
 *claude*
+
+# `odin test <pkg>` leaves the compiled test binary in the working directory.
+*.bin

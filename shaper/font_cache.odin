@@ -311,3 +311,84 @@ covered_in :: proc(table: []u8, data: []byte, coverage_offset: uint, g: Glyph) -
 	}
 	return table[i] == 2
 }
+
+// What a font's caches cost, in bytes, broken down by what pays for it.
+//
+// Worth being able to ask. Almost everything here is sized by GLYPH COUNT times
+// the number of distinct tables memoised, so it is a font property that can
+// surprise: a face with few glyphs but many contextual subtables costs more
+// than a large face with a simple layout, and nothing about the API hints at
+// that.
+Cache_Footprint :: struct {
+	per_glyph:   int, // metrics, categories and their `known` flags
+	class_memo:  int, // `class_cache`: one i32 per glyph, per class definition
+	cover_memo:  int, // `cover_cache`: one u8 per glyph, per coverage table
+	digests:     int, // GPOS coverage digests and their sorted glyph lists
+	lookups:     int, // per-lookup GSUB metadata and GPOS accelerators
+	gsub_accel:  int, // the GSUB accelerators: substitution tables and digests
+	ligature:    int, // of which: the dense first-glyph index
+	gsub_dig:    int, // of which: GSUB coverage digests
+	class_defs:  int, // how many distinct class definitions were memoised
+	cover_tables: int, // how many distinct coverage tables were memoised
+	total:       int,
+}
+
+font_cache_footprint :: proc(fc: ^Font_Cache) -> (f: Cache_Footprint) {
+	if fc == nil {return}
+	n := len(fc.category)
+
+	f.per_glyph =
+		len(fc.metrics) * size_of(ttf.Glyph_Metrics) +
+		len(fc.known) +
+		n * size_of(ttf.Glyph_Category) +
+		len(fc.cat_known) +
+		len(fc.cat_gdef)
+
+	for _, arr in fc.class_cache {
+		f.class_memo += len(arr) * size_of(i32)
+		f.class_defs += 1
+	}
+	for _, arr in fc.cover_cache {
+		f.cover_memo += len(arr)
+		f.cover_tables += 1
+	}
+
+	for d in fc.gpos_digests.all {
+		f.digests += size_of(Coverage_Digest) + len(d.sorted_glyphs) * size_of(Glyph)
+	}
+
+	f.lookups =
+		len(fc.gsub_meta) * size_of(Gsub_Lookup_Meta) +
+		len(fc.gsub_meta_built) +
+		len(fc.gpos_lookups) * size_of(Gpos_Lookup_Accel) +
+		len(fc.gpos_lookup_built) +
+		len(fc.gsub_done)
+
+	// The GSUB accelerators, which is where most of it usually is.
+	ga := &fc.gsub_accel
+	for d in ga.digests.all {
+		f.gsub_dig += size_of(Coverage_Digest) + len(d.sorted_glyphs) * size_of(Glyph)
+	}
+	for _, v in ga.single_subst {
+		f.gsub_accel += len(v.mapping) * (size_of(Glyph) * 2 + 8)
+	}
+	for _, v in ga.ligature_subst {
+		f.ligature += len(v.starts) * size_of(u32)
+		f.ligature += len(v.seqs) * size_of(Ligature_Sequence)
+		for seq in v.seqs {f.ligature += len(seq.components) * size_of(Glyph)}
+	}
+	for _, list in ga.chained_context_subst {
+		f.gsub_accel += cap(list) * size_of(Chained_Context_Accelerator)
+		for ca in list {
+			f.gsub_accel +=
+				(len(ca.backtrack_coverages) + len(ca.input_coverages) + len(ca.lookahead_coverages)) *
+				size_of(Digest_Ref)
+			f.gsub_accel += len(ca.substitutions) * size_of(Substitution_Record)
+		}
+	}
+
+	f.total =
+		f.per_glyph + f.class_memo + f.cover_memo + f.digests + f.lookups +
+		f.gsub_accel + f.ligature + f.gsub_dig
+	return
+}

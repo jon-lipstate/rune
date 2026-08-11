@@ -55,6 +55,34 @@ get_or_create_shape_cache :: proc(
 ) -> (
 	cache: ^Shaping_Cache,
 ) {
+	// The memo first: same arguments as last call means the same plan, and
+	// everything below is derivation.
+	if engine.last_plan != nil &&
+	   engine.last_font == font &&
+	   engine.last_script == script &&
+	   engine.last_language == language &&
+	   engine.last_requested == requested_features &&
+	   engine.last_disabled == disabled_features {
+		engine.cache_hits += 1
+		return engine.last_plan
+	}
+
+	remember :: proc(
+		engine: ^Engine,
+		font: ^Font,
+		script: Script_Tag,
+		language: Language_Tag,
+		requested, disabled: Feature_Set,
+		plan: ^Shaping_Cache,
+	) {
+		engine.last_font = font
+		engine.last_script = script
+		engine.last_language = language
+		engine.last_requested = requested
+		engine.last_disabled = disabled
+		engine.last_plan = plan
+	}
+
 	// Script-required features are folded in HERE rather than at the call site,
 	// so every caller -- engine, bench, anything downstream -- gets them, and so
 	// the cache key reflects what was actually used.
@@ -75,6 +103,7 @@ get_or_create_shape_cache :: proc(
 	// Check if we already have this cache entry
 	if cached, found := engine.caches[cache_key]; found {
 		engine.cache_hits += 1
+		remember(engine, font, script, language, requested_features, disabled_features, cached)
 		return cached
 	} else {
 		engine.cache_misses += 1
@@ -292,6 +321,7 @@ get_or_create_shape_cache :: proc(
 		heap := new(Shaping_Cache, engine.allocator)
 		heap^ = new_cache
 		engine.caches[cache_key] = heap
+		remember(engine, font, script, language, requested_features, disabled_features, heap)
 		return heap
 	}
 

@@ -43,17 +43,14 @@ destroy_gsub_accelerator :: proc(a: ^GSUB_Accelerator) {
 	delete(a.single_subst)
 
 	for _, &v in a.ligature_subst {
-		delete(v.starts_ligature)
-		for _, &seqs in v.ligature_map {
-			// Each sequence owns its component array -- freeing only the
-			// [dynamic] left one slice per ligature behind, which on a serif
-			// text face is a thousand of them.
-			for &seq in seqs {
-				if seq.components != nil {delete(seq.components)}
-			}
-			delete(seqs)
+		// Each sequence owns its component array -- freeing only the outer
+		// storage left one slice per ligature behind, which on a serif text
+		// face is a thousand of them.
+		for &seq in v.seqs {
+			if seq.components != nil {delete(seq.components)}
 		}
-		delete(v.ligature_map)
+		delete(v.seqs)
+		delete(v.starts)
 	}
 	delete(a.ligature_subst)
 

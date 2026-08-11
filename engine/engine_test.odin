@@ -283,3 +283,47 @@ layout_paragraph_matches_a_single_style_run :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(a[i].glyphs), len(b[i].glyphs))
 	}
 }
+
+// `cluster` is a BYTE offset, as the doc on `Positioned_Glyph` promises.
+//
+// The conversion added the piece's byte offset to the shaper's cluster, but the
+// shaper reports a RUNE INDEX within the piece. The two coincide only while the
+// text is ASCII, so every caller that maps a glyph back to the source -- an
+// editor placing a caret from a click, a PDF writer building a ToUnicode map --
+// got offsets that drifted by one byte per multi-byte character before it.
+@(test)
+clusters_are_byte_offsets_not_rune_indices :: proc(t: ^testing.T) {
+	f, ok := setup(t)
+	if !ok {return}
+	defer teardown(f)
+
+	// "a" then U+00E9 (two bytes) then "bc": rune indices 0,1,2,3 but byte
+	// offsets 0,1,3,4. A run that reports 2 for "b" is reporting runes.
+	s := "aébc"
+	testing.expect_value(t, len(s), 5)
+
+	lines := layout_paragraph(f.e, s, Style{font = f.id, size = 1}, 1000, context.temp_allocator)
+	if len(lines) == 0 {
+		testing.expect(t, false, "no lines")
+		return
+	}
+
+	// The last character sits at BYTE offset 4 and RUNE index 3, so the
+	// maximum cluster distinguishes the two unambiguously.
+	hi := -1
+	for g in lines[0].glyphs {
+		testing.expectf(
+			t,
+			g.cluster >= 0 && g.cluster <= len(s),
+			"cluster %d outside the string",
+			g.cluster,
+		)
+		if g.cluster > hi {hi = g.cluster}
+	}
+	testing.expectf(
+		t,
+		hi == 4,
+		"highest cluster is %d; want 4 (the byte offset of the last character). 3 means rune indices",
+		hi,
+	)
+}

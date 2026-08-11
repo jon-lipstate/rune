@@ -37,6 +37,27 @@ is_consonant :: proc(r: rune) -> bool {
 	return false
 }
 
+// What a dependent vowel may attach to.
+//
+// Not only consonants: an INDEPENDENT vowel takes a matra too, and a pre-base
+// one reorders in front of it exactly as it would in front of a consonant.
+// HarfBuzz spells this out as a separate production, `vowel_syllable`, running
+// alongside `consonant_syllable`.
+//
+// Requiring a consonant meant a syllable that begins with an independent vowel
+// never reordered. Noto Sans Newa and Noto Sans Siddham both show it: their
+// samples run independent vowels together, and every pre-base sign among them
+// stayed to the right of its base.
+@(private = "file")
+takes_matra :: proc(r: rune) -> bool {
+	if is_consonant(r) {return true}
+	#partial switch text.indic_syllabic(r) {
+	case .Vowel_Independent, .Vowel:
+		return true
+	}
+	return false
+}
+
 // A dependent vowel drawn to the LEFT of its base.
 //
 // `Visual_Order_Left` is excluded on purpose: those characters are already
@@ -83,6 +104,38 @@ INDIC_SCRIPTS := []Script_Tag {
 	// added on the assumption that a partial rule is better than none.
 	.mtei,
 	.shrd,
+	// Myanmar's U+1031 VOWEL SIGN E is Left, and HarfBuzz's `reorder_myanmar`
+	// moves it to the front of its syllable like any other pre-base vowel.
+	// This is only that one rule; the rest of the Myanmar shaper is absent.
+	.mymr,
+	// Added on the same evidence rule: each of these four moves a
+	// Vowel_Dependent/Left sign in the corpus and matched HarfBuzz once the
+	// rule reached it. Eleven more USE scripts were tried in the same pass
+	// (Kawi, Nandinagari, Tirhuta, Newa, Siddham, Dogra, Masaram Gondi,
+	// Khudawadi, Kaithi, Dives Akuru, Soyombo) and changed nothing either way,
+	// so they are left out rather than added on the assumption that a partial
+	// rule helps.
+	.bugi,
+	.lepc,
+	.maka,
+	.takr,
+	// Kaithi joined once USE scripts started getting their features -- the
+	// reorder had nothing to work with before. Eleven others were retried in
+	// the same pass (Tirhuta, Nandinagari, Khudawadi, Dogra, Kawi, Newa,
+	// Siddham, Masaram Gondi, Dives Akuru, Soyombo, Todhri) and still changed
+	// nothing, so they stay out.
+	.kthi,
+	// These six only started reordering once `takes_matra` accepted an
+	// INDEPENDENT vowel as a base -- their samples run independent vowels
+	// together, so every pre-base sign among them had nothing it recognised to
+	// move in front of. Twelve further USE scripts were retried in the same
+	// pass and still changed nothing.
+	.newa,
+	.sidd,
+	.tirh,
+	.nand,
+	.sind,
+	.dogr,
 }
 
 @(private)
@@ -118,7 +171,7 @@ reorder_indic :: proc(buffer: ^Shaping_Buffer) {
 		j := i - 1
 		// A nukta sits between the consonant and the matra.
 		for j >= 0 && text.indic_syllabic(buffer.runes[j]) == .Nukta {j -= 1}
-		if j < 0 || !is_consonant(buffer.runes[j]) {continue}
+		if j < 0 || !takes_matra(buffer.runes[j]) {continue}
 		first := j
 
 		// Extend across `virama consonant` pairs only.

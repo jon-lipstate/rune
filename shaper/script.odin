@@ -20,6 +20,7 @@ Script_Tag :: enum u32 {
 	bass = 0x62_61_73_73, // Bassa Vah
 	batk = 0x62_61_74_6B, // Batak
 	beng = 0x62_65_6E_67, // Bengali
+	berf = 0x62_65_72_66, // Beria Erfe
 	bhks = 0x62_68_6B_73, // Bhaiksuki
 	blis = 0x62_6C_69_73, // Blissymbols
 	bng2 = 0x62_6E_67_32, // Bengali v2
@@ -36,6 +37,7 @@ Script_Tag :: enum u32 {
 	chrs = 0x63_68_72_73, // Chorasmian
 	cirt = 0x63_69_72_74, // Cirth
 	copt = 0x63_6F_70_74, // Coptic
+	cpmn = 0x63_70_6D_6E, // Cypro-Minoan
 	cprt = 0x63_70_72_74, // Cypriot
 	cyrl = 0x63_79_72_6C, // Cyrillic
 	cyrs = 0x63_79_72_73, // Cyrillic (Old Church Slavonic variant)
@@ -60,6 +62,7 @@ Script_Tag :: enum u32 {
 	gran = 0x67_72_61_6E, // Grantha
 	grek = 0x67_72_65_6B, // Greek
 	gujr = 0x67_75_6A_72, // Gujarati
+	gukh = 0x67_75_6B_68, // Gurung Khema
 	gur2 = 0x67_75_72_32, // Gurmukhi v2
 	guru = 0x67_75_72_75, // Gurmukhi
 	hang = 0x68_61_6E_67, // Hangul
@@ -81,6 +84,7 @@ Script_Tag :: enum u32 {
 	jurc = 0x6A_75_72_63, // Jurchen
 	kali = 0x6B_61_6C_69, // Kayah Li
 	kana = 0x6B_61_6E_61, // Katakana
+	kawi = 0x6B_61_77_69, // Kawi
 	khar = 0x6B_68_61_72, // Kharoshthi
 	khmr = 0x6B_68_6D_72, // Khmer
 	khoj = 0x6B_68_6F_6A, // Khojki
@@ -89,6 +93,7 @@ Script_Tag :: enum u32 {
 	knda = 0x6B_6E_64_61, // Kannada
 	kore = 0x6B_6F_72_65, // Korean (Hangul + Han)
 	kpel = 0x6B_70_65_6C, // Kpelle
+	krai = 0x6B_72_61_69, // Kirat Rai
 	kthi = 0x6B_74_68_69, // Kaithi
 	lana = 0x6C_61_6E_61, // Tai Tham (Lanna)
 	laoo = 0x6C_61_6F_6F, // Lao
@@ -138,7 +143,9 @@ Script_Tag :: enum u32 {
 	mtei = 0x6D_74_65_69, // Meitei Mayek
 	mult = 0x6D_75_6C_74, // Multani
 	musc = 0x6D_75_73_63, // Musical notation
-	mymr = 0x6D_79_6D_72, // Myanmar
+	mymr = 0x6D_79_6D_72,
+	mym2 = 0x6D_79_6D_32, // Myanmar (version 2) // Myanmar
+	nagm = 0x6E_61_67_6D, // Nag Mundari
 	nand = 0x6E_61_6E_64, // Nandinagari
 	narb = 0x6E_61_72_62, // Old North Arabian
 	nbat = 0x6E_62_61_74, // Nabataean
@@ -149,6 +156,7 @@ Script_Tag :: enum u32 {
 	nshu = 0x6E_73_68_75, // Nüshu
 	ogam = 0x6F_67_61_6D, // Ogham
 	olck = 0x6F_6C_63_6B, // Ol Chiki
+	onao = 0x6F_6E_61_6F, // Ol Onal
 	orkh = 0x6F_72_6B_68, // Old Turkic
 	ory2 = 0x6F_72_79_32, // Oriya v2
 	orya = 0x6F_72_79_61, // Oriya
@@ -175,6 +183,7 @@ Script_Tag :: enum u32 {
 	shaw = 0x73_68_61_77, // Shavian
 	shrd = 0x73_68_72_64, // Sharada
 	sidd = 0x73_69_64_64, // Siddham
+	sidt = 0x73_69_64_74, // Sidetic
 	sind = 0x73_69_6E_64, // Khudawadi
 	sinh = 0x73_69_6E_68, // Sinhala
 	sogd = 0x73_6F_67_64, // Sogdian
@@ -182,6 +191,7 @@ Script_Tag :: enum u32 {
 	sora = 0x73_6F_72_61, // Sora Sompeng
 	soyo = 0x73_6F_79_6F, // Soyombo
 	sund = 0x73_75_6E_64, // Sundanese
+	sunu = 0x73_75_6E_75, // Sunuwar
 	sylo = 0x73_79_6C_6F, // Syloti Nagri
 	syrc = 0x73_79_72_63, // Syriac
 	syre = 0x73_79_72_65, // Syriac (Estrangelo variant)
@@ -194,6 +204,7 @@ Script_Tag :: enum u32 {
 	taml = 0x74_61_6D_6C, // Tamil
 	tang = 0x74_61_6E_67, // Tangut
 	tavt = 0x74_61_76_74, // Tai Viet
+	tayo = 0x74_61_79_6F, // Tai Yo
 	tel2 = 0x74_65_6C_32, // Telugu v2
 	telu = 0x74_65_6C_75, // Telugu
 	teng = 0x74_65_6E_67, // Tengwar
@@ -204,9 +215,15 @@ Script_Tag :: enum u32 {
 	tibt = 0x74_69_62_74, // Tibetan
 	tirh = 0x74_69_72_68, // Tirhuta
 	tml2 = 0x74_6D_6C_32, // Tamil v2
+	tnsa = 0x74_6E_73_61, // Tangsa
+	todr = 0x74_6F_64_72, // Todhri
+	tols = 0x74_6F_6C_73, // Tolong Siki
+	toto = 0x74_6F_74_6F, // Toto
+	tutg = 0x74_75_74_67, // Tulu-Tigalari
 	ugar = 0x75_67_61_72, // Ugaritic
 	vaii = 0x76_61_69_69, // Vai
 	visp = 0x76_69_73_70, // Visible Speech
+	vith = 0x76_69_74_68, // Vithkuqi
 	wara = 0x77_61_72_61, // Warang Citi
 	wcho = 0x77_63_68_6F, // Wancho
 	wole = 0x77_6F_6C_65, // Woleai
@@ -404,7 +421,7 @@ get_script_direction :: proc(script: Script_Tag) -> Direction {
 		.merc, .mero, .mani, .mend, .nbat, .narb,
 		.palm, .phlp, .hatr, .adlm, .rohg, .hung,
 		.sogo, .sogd, .elym, .chrs, .yezi, .ougr,
-		.gara:
+		.gara, .sidt:
 		return .Right_To_Left
 	case:
 		return .Left_To_Right

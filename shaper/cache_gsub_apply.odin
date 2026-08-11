@@ -37,27 +37,30 @@ is_glyph_in_coverage :: proc(pool: ^Digest_Pool, ref: Digest_Ref, glyph: Glyph) 
 		return false
 	}
 
-	// Potential match, check for exact match
-	if len(digest.direct_map) > 0 {
-		// For small coverage sets, check direct map
-		if _, in_coverage := digest.direct_map[glyph]; in_coverage {
+	// The exact answer, from the sorted array.
+	//
+	// Linear while the set fits in a cache line: most coverages in a contextual
+	// lookup are one or two glyphs, and a compare-and-branch beats a binary
+	// search's dependent loads at that size. Binary above it.
+	gs := digest.sorted_glyphs
+	if len(gs) <= 16 {
+		for g in gs {
+			if g == glyph {return true}
+			if g > glyph {return false} 	// sorted: no point looking further
+		}
+		return false
+	}
+	low, high := 0, len(gs) - 1
+	for low <= high {
+		mid := (low + high) / 2
+		if gs[mid] < glyph {
+			low = mid + 1
+		} else if gs[mid] > glyph {
+			high = mid - 1
+		} else {
 			return true
 		}
-	} else if len(digest.sorted_glyphs) > 0 {
-		// For larger sets, use binary search
-		low, high := 0, len(digest.sorted_glyphs) - 1
-		for low <= high {
-			mid := (low + high) / 2
-			if digest.sorted_glyphs[mid] < glyph {
-				low = mid + 1
-			} else if digest.sorted_glyphs[mid] > glyph {
-				high = mid - 1
-			} else {
-				return true
-			}
-		}
 	}
-
 	// Not found in the precise check
 	return false
 }
@@ -515,19 +518,40 @@ apply_accelerated_multiple_subst :: proc(
 		buffer.categories_dirty = true
 		glyph_info.flags += {.Substituted, .Multiplied}
 
-		for sub_glyph, i in subst_sequence[1:] {
-			// Create new glyph info
+		// The rest of the sequence goes in with ONE shift, not one per glyph.
+		//
+		// `insert_at_elem` moves everything after the insertion point to make
+		// room, so inserting a three-glyph expansion one glyph at a time walked
+		// the tail of the buffer three times. Multiple substitution is 23% of a
+		// Naskh Arabic run -- the font decomposes through `ccmp` -- and most of
+		// that was this.
+		extras := subst_sequence[1:]
+		if len(extras) > 0 {
 			buffer.categories_dirty = true
-			new_glyph := Glyph_Info {
-				needs_category = true,
-				glyph_id = sub_glyph,
-				cluster  = original_cluster,
-				flags    = {.Substituted, .Multiplied},
+			// Expansions are two or three glyphs in practice; the fallback is
+			// for a font that disagrees, not for correctness.
+			scratch: [16]Glyph_Info
+			if len(extras) <= len(scratch) {
+				for sub_glyph, i in extras {
+					scratch[i] = Glyph_Info {
+						needs_category = true,
+						glyph_id       = sub_glyph,
+						cluster        = original_cluster,
+						flags          = {.Substituted, .Multiplied},
+					}
+				}
+				ttf.insert_at_elem(&buffer.glyphs, pos + 1, ..scratch[:len(extras)])
+			} else {
+				for sub_glyph, i in extras {
+					new_glyph := Glyph_Info {
+						needs_category = true,
+						glyph_id       = sub_glyph,
+						cluster        = original_cluster,
+						flags          = {.Substituted, .Multiplied},
+					}
+					ttf.insert_at_elem(&buffer.glyphs, pos + i + 1, new_glyph)
+				}
 			}
-
-			// Insert at the next position
-			insert_idx := pos + i + 1
-			ttf.insert_at_elem(&buffer.glyphs, insert_idx, new_glyph)
 		}
 
 		pos += len(subst_sequence)
@@ -559,7 +583,9 @@ apply_accelerated_ligature_subst :: proc(
 		}
 
 		// Quick check if this glyph can start a ligature
-		if !accel.starts_ligature[first_glyph.glyph_id] {
+		// Two indices, where this used to hash twice.
+		gid := int(first_glyph.glyph_id)
+		if gid + 1 >= len(accel.starts) || accel.starts[gid] == accel.starts[gid + 1] {
 			pos += 1
 			continue
 		}
@@ -567,7 +593,8 @@ apply_accelerated_ligature_subst :: proc(
 		// Try to find a ligature match for this glyph
 		ligature_found := false
 
-		if sequences, has_sequences := accel.ligature_map[first_glyph.glyph_id]; has_sequences {
+		{
+			sequences := accel.seqs[accel.starts[gid]:accel.starts[gid + 1]]
 			for sequence in sequences {
 				if match_ligature_sequence(buffer, pos, sequence.components, lookup_flags) {
 					apply_ligature_substitution(
@@ -660,6 +687,67 @@ apply_nested_lookup_at_seq_index :: proc(
 				}
 			}
 		}
+	case .Ligature:
+		// AT this position, not over the whole buffer. Falling through to
+		// `apply_lookup` formed the ligature everywhere its components happened
+		// to sit; 77 of the 2373 installed fonts name a ligature lookup from a
+		// contextual rule and every one took that path.
+		it, it_ok := ttf.into_subtable_iter(gsub, lookup_list_index)
+		if it_ok {
+			for sub_off in ttf.iter_subtable_offset(&it) {
+				if d, done := apply_ligature_substitution_at(gsub, sub_off, buffer, target_pos);
+				   done {
+					delta = d
+					break
+				}
+			}
+		}
+
+	case .Extension:
+		// Unwrap and re-dispatch at the same position. An Extension reached
+		// from a record was not resolved at all: the dispatcher saw type 7,
+		// matched nothing, and took the buffer-wide fallback.
+		it, it_ok := ttf.into_subtable_iter(gsub, lookup_list_index)
+		if it_ok {
+			for sub_off in ttf.iter_subtable_offset(&it) {
+				inner_type, inner_off, res_ok := nested_resolve_extension(gsub, sub_off)
+				if !res_ok {continue}
+				done := false
+				#partial switch inner_type {
+				case .Single:
+					done = apply_single_substitution_at(gsub, inner_off, buffer, target_pos)
+				case .Multiple:
+					d: int
+					d, done = apply_multiple_substitution_at(gsub, inner_off, buffer, target_pos)
+					if done {delta = d}
+				case .Ligature:
+					d: int
+					d, done = apply_ligature_substitution_at(gsub, inner_off, buffer, target_pos)
+					if done {delta = d}
+				case .Context, .ChainedContext:
+					// `apply_nested_context_at` unwraps the Extension itself,
+					// so hand it the OUTER lookup and let it resolve.
+					handled, d := apply_nested_context_at(
+						gsub,
+						buffer,
+						lookup_list_index,
+						lookup_type,
+						target_pos,
+					)
+					if handled {
+						delta = d
+						done = true
+					}
+				case:
+					when #config(NESTLOG, false) {
+						fmt.eprintfln("NESTEXT %v", inner_type)
+					}
+					note_unsupported_gsub(.Nested_Non_Single)
+				}
+				if done {break}
+			}
+		}
+
 	case .Context, .ChainedContext:
 		// A contextual lookup reached from another lookup's record applies AT
 		// this position, not over the buffer. See `apply_nested_context_at`.
@@ -674,11 +762,13 @@ apply_nested_lookup_at_seq_index :: proc(
 		} else {
 			// A format this does not read: the old buffer-wide fallback, which
 			// is wrong but is what this did for every non-Single type before.
+			when #config(NESTLOG, false) {fmt.eprintfln("NESTFMT12 %v", lookup_type)}
 			note_unsupported_gsub(.Nested_Non_Single)
 			apply_lookup(gsub, lookup_list_index, lookup_type, nested_flags, buffer)
 		}
 
 	case:
+		when #config(NESTLOG, false) {fmt.eprintfln("NESTGSUB %v", lookup_type)}
 		note_unsupported_gsub(.Nested_Non_Single)
 		when #config(GSUBLOG, false) {
 			fmt.eprintfln("  nested non-single: type=%v lookup=%d", lookup_type, lookup_list_index)
@@ -1096,7 +1186,7 @@ chained_context_match_at :: proc(
 	buffer: ^Shaping_Buffer,
 	pool: ^Digest_Pool,
 	fc: ^Font_Cache,
-	accel: Chained_Context_Accelerator,
+	accel: ^Chained_Context_Accelerator,
 	pos: int,
 	lookup_flags: ttf.Lookup_Flags,
 ) -> (
@@ -1169,7 +1259,7 @@ chained_context_match_at :: proc(
 @(private)
 subtable_cannot_touch_buffer :: proc(
 	pool: ^Digest_Pool,
-	accel: Chained_Context_Accelerator,
+	accel: ^Chained_Context_Accelerator,
 	buffer: ^Shaping_Buffer,
 ) -> bool {
 	ref := accel.format == 3 && len(accel.input_coverages) > 0 \
@@ -1177,6 +1267,10 @@ subtable_cannot_touch_buffer :: proc(
 		: accel.coverage
 	d := digest_at(pool, ref)
 	if d == nil {return false}
+	// Splitting these 32 bytes into an array of their own -- so the scan over a
+	// lookup's subtables walks contiguous memory instead of a cache line per
+	// subtable -- was tried and measured NOTHING on the workload that scans
+	// most (`aalt`, 62 subtables). The cost is the iteration, not the layout.
 	for i in 0 ..< 8 {
 		if d.digest[i] & buffer.digest[i] != 0 {return false}
 	}
@@ -1188,7 +1282,7 @@ subtable_cannot_touch_buffer :: proc(
 // The digest of what a contextual subtable matches FIRST at a position: the
 // first input coverage for format 3, the subtable coverage otherwise.
 @(private)
-context_match_digest :: proc(accel: Chained_Context_Accelerator) -> Digest_Ref {
+context_match_digest :: proc(accel: ^Chained_Context_Accelerator) -> Digest_Ref {
 	if accel.format == 3 && len(accel.input_coverages) > 0 {return accel.input_coverages[0]}
 	return accel.coverage
 }
@@ -1234,7 +1328,7 @@ apply_chained_context_lookup :: proc(
 	// lookups have exactly one -- and it needs none of the machinery below.
 	// Building the survivor list for it cost the mark-heavy workloads ~7%.
 	if len(accels) == 1 {
-		accel := accels[0]
+		accel := &accels[0]
 		when #config(GSUBTIME, false) {gsub_ctx_subtables += 1}
 		if subtable_cannot_touch_buffer(pool, accel, buffer) {
 			when #config(GSUBTIME, false) {gsub_ctx_rejected += 1}
@@ -1251,9 +1345,9 @@ apply_chained_context_lookup :: proc(
 
 	live: [64]int
 	n_live := 0
-	for accel, i in accels {
+	for i in 0 ..< len(accels) {
 		when #config(GSUBTIME, false) {gsub_ctx_subtables += 1}
-		if subtable_cannot_touch_buffer(pool, accel, buffer) {
+		if subtable_cannot_touch_buffer(pool, &accels[i], buffer) {
 			when #config(GSUBTIME, false) {gsub_ctx_rejected += 1}
 			continue
 		}
@@ -1284,13 +1378,13 @@ apply_chained_context_lookup :: proc(
 	overlap := false
 	if n_live < CONTEXT_POSITION_OUTER_MIN {
 		check: for a in 0 ..< n_live {
-			da := digest_at(pool, context_match_digest(accels[live[a]]))
+			da := digest_at(pool, context_match_digest(&accels[live[a]]))
 			if da == nil {
 				overlap = true
 				break check
 			}
 			for b in a + 1 ..< n_live {
-				db := digest_at(pool, context_match_digest(accels[live[b]]))
+				db := digest_at(pool, context_match_digest(&accels[live[b]]))
 				if db == nil {
 					overlap = true
 					break check
@@ -1308,7 +1402,7 @@ apply_chained_context_lookup :: proc(
 	if overlap || n_live >= CONTEXT_POSITION_OUTER_MIN {
 		all_cov: [8]u32
 		for k in 0 ..< n_live {
-			if d := digest_at(pool, context_match_digest(accels[live[k]])); d != nil {
+			if d := digest_at(pool, context_match_digest(&accels[live[k]])); d != nil {
 				for i in 0 ..< 8 {all_cov[i] |= d.digest[i]}
 			}
 		}
@@ -1326,10 +1420,16 @@ apply_chained_context_lookup :: proc(
 				continue
 			}
 			advanced := false
+			// Pre-filtering the survivors here on a single-glyph first coverage
+			// -- which is how a font that splits a lookup across many subtables
+			// builds them -- was tried and measured NOTHING. `chained_context_
+			// match_at` tests that coverage first anyway, and since coverages
+			// became sorted arrays that test is a one-element scan. The check
+			// was already free; doing it twice is not faster.
 			for k in 0 ..< n_live {
 				buffer.cursor = pos
 				next, matched := chained_context_match_at(
-					gsub, buffer, pool, fc, accels[live[k]], pos, lookup_flags,
+					gsub, buffer, pool, fc, &accels[live[k]], pos, lookup_flags,
 				)
 				if matched {
 					pos = max(next, pos + 1)
@@ -1344,7 +1444,7 @@ apply_chained_context_lookup :: proc(
 
 	for k in 0 ..< n_live {
 		apply_one_contextual_subtable(
-			gsub, buffer, pool, fc, accels[live[k]], lookup_flags,
+			gsub, buffer, pool, fc, &accels[live[k]], lookup_flags,
 		)
 	}
 }
@@ -1357,7 +1457,7 @@ apply_one_contextual_subtable :: proc(
 	buffer: ^Shaping_Buffer,
 	pool: ^Digest_Pool,
 	fc: ^Font_Cache,
-	accel: Chained_Context_Accelerator,
+	accel: ^Chained_Context_Accelerator,
 	lookup_flags: ttf.Lookup_Flags,
 ) {
 		// The format switch is hoisted OUT of the position loop, and each arm
@@ -1411,7 +1511,7 @@ chained_context_format3_match_at :: proc(
 	gsub: ^ttf.GSUB_Table,
 	buffer: ^Shaping_Buffer,
 	pool: ^Digest_Pool,
-	accel: Chained_Context_Accelerator,
+	accel: ^Chained_Context_Accelerator,
 	pos: int,
 	lookup_flags: ttf.Lookup_Flags,
 ) -> (

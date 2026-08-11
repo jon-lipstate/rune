@@ -29,6 +29,21 @@ Engine :: struct {
 	caches:           map[Shaping_Cache_Key]^Shaping_Cache,
 	// One per font, shared by every plan on it. See font_cache.odin.
 	font_caches:      map[^Font]^Font_Cache,
+	// A one-entry memo in FRONT of `caches`, keyed on the arguments rather than
+	// on the resolved key.
+	//
+	// Shaping is called in a loop with the same script, language and features:
+	// a paragraph, an editor frame, a benchmark. Reaching the map means
+	// rebuilding the resolved feature set from `COMMON_FEATURES` and the
+	// script's list, two table lookups, and hashing an 80-byte key -- all of it
+	// to arrive at the same pointer as last time. Comparing the arguments is a
+	// handful of words, and the hit rate on real callers is nearly one.
+	last_font:        ^Font,
+	last_script:      Script_Tag,
+	last_language:    Language_Tag,
+	last_requested:   Feature_Set,
+	last_disabled:    Feature_Set,
+	last_plan:        ^Shaping_Cache,
 	// cache_capacity:    int,
 	// current_timestamp: u64,
 

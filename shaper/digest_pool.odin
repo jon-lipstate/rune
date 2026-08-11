@@ -38,7 +38,6 @@ digest_pool_make :: proc(allocator := context.allocator) -> Digest_Pool {
 
 digest_pool_destroy :: proc(p: ^Digest_Pool) {
 	for &d in p.all {
-		delete(d.direct_map)
 		if d.sorted_glyphs != nil {delete(d.sorted_glyphs)}
 	}
 	delete(p.all)

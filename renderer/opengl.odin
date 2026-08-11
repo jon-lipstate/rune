@@ -370,6 +370,18 @@ prepare_shaped_text :: proc(
 	return true
 }
 
+// A glyph that has ALREADY been laid out: absolute position, no pen.
+//
+// `x` and `y` are in the same output units as the face was built for -- the
+// caller has already applied `size / units_per_em`. This is the shape a text
+// ENGINE produces, as opposed to a shaper: bidi has been resolved, runs have
+// been reordered, and a line has been chosen, so there is no advance left to
+// accumulate and no direction left to interpret.
+Placed_Glyph :: struct {
+	glyph: shaper.Glyph,
+	x, y:  f32,
+}
+
 // Render buffer struct - a view into a shaping buffer without allocation
 Render_Buffer :: struct {
 	// Only rendering-relevant metadata
@@ -377,6 +389,33 @@ Render_Buffer :: struct {
 	// Slices pointing into the original buffer (no allocation)
 	glyphs:    []shaper.Glyph_Info,
 	positions: []shaper.Glyph_Position,
+	// When non-empty, these REPLACE the two above: already-positioned glyphs,
+	// drawn where they are rather than walked with a pen.
+	//
+	// Kept as a variant of the same struct rather than a second renderer so the
+	// uniform setup, the buffer binding and the draw call stay in one place --
+	// the two paths differ only in where a glyph goes.
+	placed:    []Placed_Glyph,
+}
+
+// Warm the GPU glyph cache for already-positioned glyphs.
+prepare_placed_glyphs :: proc(
+	r: ^OpenGL_Renderer,
+	face: ^OpenGL_Font_Face_Instance,
+	glyphs: []Placed_Glyph,
+) -> (
+	ok: bool,
+) {
+	for g in glyphs {
+		if _, exists := face.glyph_to_index[g.glyph]; !exists {
+			if !add_glyph_to_gpu_cache(face, g.glyph) {return false}
+		}
+	}
+	if face.needs_upload {
+		upload_gpu_buffers(face)
+		face.needs_upload = false
+	}
+	return true
 }
 
 // Create a render buffer that's a view into a shaping buffer range
@@ -711,7 +750,7 @@ render_text :: proc(
 	multi_sampling: i32 = 0,
 	enable_control_points_visualization := false,
 ) {
-	if len(render_buf.glyphs) == 0 {return}
+	if len(render_buf.glyphs) == 0 && len(render_buf.placed) == 0 {return}
 
 	gl.UseProgram(r.shader_program)
 	check_gl_error("UseProgram")
@@ -764,19 +803,30 @@ render_text :: proc(
 	clear(&r.scratch_vertices)
 
 	pen: [2]f32
+	placed := len(render_buf.placed) > 0
+	count := placed ? len(render_buf.placed) : len(render_buf.glyphs)
 
-	for i in 0 ..< len(render_buf.glyphs) {
-		glyph_info := render_buf.glyphs[i]
-		position := render_buf.positions[i]
+	for i in 0 ..< count {
+		gid: shaper.Glyph
+		x, y: f32
+		if placed {
+			// Already laid out: the position IS the position.
+			pg := render_buf.placed[i]
+			gid = pg.glyph
+			x, y = pg.x, pg.y
+		} else {
+			gid = render_buf.glyphs[i].glyph_id
+			position := render_buf.positions[i]
+			x = pen.x + f32(position.x_offset) * face.scale_factor
+			y = pen.y + f32(position.y_offset) * face.scale_factor
+			pen.x += f32(position.x_advance) * face.scale_factor
+			pen.y += f32(position.y_advance) * face.scale_factor
+		}
 
-		buffer_index, exists := face.glyph_to_index[glyph_info.glyph_id]
+		buffer_index, exists := face.glyph_to_index[gid]
 		if !exists {continue}
 
 		bounds := face.glyph_bounds[buffer_index]
-
-		// Calculate screen position using stored bounds
-		x := pen.x + f32(position.x_offset) * face.scale_factor
-		y := pen.y + f32(position.y_offset) * face.scale_factor
 
 		left := x + bounds.left * face.scale_factor
 		bottom := y + bounds.bottom * face.scale_factor
@@ -799,9 +849,6 @@ render_text :: proc(
 
 		append(&r.scratch_indices, base_vertex + 0, base_vertex + 1, base_vertex + 2)
 		append(&r.scratch_indices, base_vertex + 2, base_vertex + 3, base_vertex + 0)
-
-		pen.x += f32(position.x_advance) * face.scale_factor
-		pen.y += f32(position.y_advance) * face.scale_factor
 	}
 
 	if len(r.scratch_indices) == 0 {

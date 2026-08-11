@@ -1200,7 +1200,7 @@ apply_chained_context_pos_subtable :: proc(
 			last_input, matched = chained_context_pos_match_at(
 				gpos,
 				subtable_offset,
-				layout,
+				&layout,
 				buffer,
 				pos,
 				fc,
@@ -1209,7 +1209,7 @@ apply_chained_context_pos_subtable :: proc(
 			last_input, matched = chained_pos_match_12(
 				gpos,
 				subtable_offset,
-				layout,
+				&layout,
 				buffer,
 				pos,
 				fc,

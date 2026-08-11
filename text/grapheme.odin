@@ -146,3 +146,42 @@ set_grapheme_state :: proc "contextless" (
 	it.ri_odd = cur == .Regional_Indicator ? !it.ri_odd : false
 	it.prev = cur
 }
+
+// The cluster boundary at or before `offset`.
+//
+// Cursor movement, selection and delete-backwards all need this and none of
+// them should be re-deriving it. The editor was stepping one RUNE instead,
+// which parks the cursor inside a combining sequence, an emoji ZWJ sequence or
+// a Devanagari syllable and deletes half a character.
+//
+// Returns 0 for an offset at or before the start, and never returns `offset`
+// itself unless `offset` is 0 -- the caller wants somewhere new to go.
+prev_grapheme_boundary :: proc "contextless" (s: string, offset: int) -> int {
+	if offset <= 0 {return 0}
+	limit := offset
+	if limit > len(s) {limit = len(s)}
+
+	prev := 0
+	it := into_grapheme_iterator(s)
+	for {
+		at, ok := next_grapheme(&it)
+		if !ok || at >= limit {break}
+		prev = at
+	}
+	return prev
+}
+
+// The first cluster boundary strictly after `offset`, or `len(s)`.
+next_grapheme_boundary :: proc "contextless" (s: string, offset: int) -> int {
+	if offset >= len(s) {return len(s)}
+	from := offset
+	if from < 0 {from = 0}
+
+	it := into_grapheme_iterator(s)
+	for {
+		at, ok := next_grapheme(&it)
+		if !ok {break}
+		if at > from {return at}
+	}
+	return len(s)
+}

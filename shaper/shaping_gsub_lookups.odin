@@ -154,8 +154,29 @@ should_skip_glyph_in :: proc(
 	flags: ttf.Lookup_Flags,
 ) -> bool {
 	if should_skip_glyph(gc, flags, buffer.skip_mask) {return true}
+
 	if .USE_MARK_FILTERING_SET in flags.flags && gc == .Mark {
 		return !in_mark_filter(buffer, g)
 	}
+
+	// GDEF's THIRD skip mechanism -- a lookup naming a mark attachment CLASS in
+	// its high flag byte, which hides every mark outside that class -- is NOT
+	// implemented here, deliberately.
+	//
+	// It was implemented and reverted. Adding the test to this procedure cost a
+	// Latin paragraph 23% on a font that uses no mark attachment classes at all,
+	// so the branch was never once taken; four arrangements were tried
+	// (category-first, else-if, a separate statement, and both fields folded
+	// into a single masked compare with the work out of line) and none got the
+	// cost below 18%. This procedure is inlined into the hottest loop in the
+	// shaper and is evidently sitting right on a threshold.
+	//
+	// It bought nothing measurable: a sweep of 2373 installed fonts gives byte
+	// identical results with and without it. `ttf` parses the byte and `GDEF`
+	// loads the class table, so the data is there when a font that needs it
+	// turns up -- but it wants a design that keeps this procedure the size it
+	// is, most likely resolving the class into the glyph info once at mapping
+	// time rather than asking GDEF per glyph per lookup.
 	return false
 }
+

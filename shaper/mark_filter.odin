@@ -29,6 +29,7 @@ bind_mark_sets :: proc(font: ^Font, buffer: ^Shaping_Buffer) {
 	buffer.gdef_data, buffer.mark_sets_base = gdef.raw_data, base
 }
 
+
 // Resolve mark filtering set `index` to an absolute coverage offset.
 // Returns 0 when there is none, which the caller reads as "filter nothing".
 resolve_mark_filter :: proc(buffer: ^Shaping_Buffer, index: u16) -> (data: []byte, coverage: uint) {

@@ -1,5 +1,6 @@
 package shaper
 
+import "core:fmt"
 import ttf "../ttf"
 
 // ChainedContext positioning (GPOS type 8), format 3.
@@ -37,6 +38,11 @@ gpos_covered :: proc(data: []byte, cov: uint, g: Glyph) -> bool {
 	_, ok := ttf.get_coverage_index(data, cov, g)
 	return ok
 }
+
+// How deep a chain of contextual GPOS lookups calling contextual lookups may
+// go, matching the GSUB side and HarfBuzz's HB_MAX_NESTING_LEVEL.
+@(private)
+nested_gpos_depth: int
 
 // Apply one GPOS lookup at a single buffer position.
 //
@@ -85,7 +91,10 @@ apply_gpos_lookup_at :: proc(
 
 	changed := false
 	if la != nil && la.ok {
-		for st in la.subtables {
+		// Indexed: the ChainedContext arm needs a pointer to the subtable's
+		// `Chain_Layout` rather than a copy of it.
+		for si in 0 ..< len(la.subtables) {
+			st := &la.subtables[si]
 			#partial switch lookup_type {
 			case .Single:
 				if single_pos_at(gpos, st.offset, buffer, pos) {changed = true;break}
@@ -94,7 +103,25 @@ apply_gpos_lookup_at :: proc(
 					changed = true
 					break
 				}
+			case .Context, .ChainedContext:
+				// A contextual GPOS lookup naming ANOTHER contextual lookup.
+				// This was dropped outright -- GPOS has no buffer-wide fallback
+				// here, so the positioning simply did not happen.
+				if nested_gpos_depth >= MAX_NESTED_CONTEXT_DEPTH {break}
+				nested_gpos_depth += 1
+				m: bool
+				if st.chain.format == 3 {
+					_, m = chained_context_pos_match_at(gpos, st.offset, &st.chain, buffer, pos, fc)
+				} else if st.chain.ok {
+					_, m = chained_pos_match_12(gpos, st.offset, &st.chain, buffer, pos, fc)
+				}
+				nested_gpos_depth -= 1
+				if m {
+					changed = true
+					break
+				}
 			case:
+				when #config(NESTLOG, false) {fmt.eprintfln("NESTGPOS %v", lookup_type)}
 				note_unsupported_gpos(.Nested_Pos_Unhandled)
 			}
 		}
@@ -159,7 +186,12 @@ single_pos_at :: proc(
 chained_context_pos_match_at :: proc(
 	gpos: ^ttf.GPOS_Table,
 	subtable_offset: uint,
-	layout: Chain_Layout,
+	// BY POINTER. `Chain_Layout` carries eight offsets, seven slices and the
+	// memoised tables -- a couple of hundred bytes -- and this is called once
+	// per buffer position per subtable. Nastaliq has 372 chained subtables over
+	// a line of 81 glyphs, so passing it by value copied megabytes per shaping
+	// call and was the single largest cost in the profile.
+	layout: ^Chain_Layout,
 	buffer: ^Shaping_Buffer,
 	pos: int,
 	fc: ^Font_Cache,
@@ -187,7 +219,15 @@ chained_context_pos_match_at :: proc(
 	// Input, skipping ignorables between positions.
 	positions: [MAX_CONTEXT_INPUT]int
 	positions[0] = pos
-	if !chain_covered(fc, layout.input_d, 0, data, cov_of(data, subtable_offset, input_at, 0), buffer.glyphs[pos].glyph_id) {
+	// The first input coverage decides whether a rule can START here, so it is
+	// asked at every position of every subtable. Answer it from the memoised
+	// table rather than a binary search; the caller's digest has already turned
+	// away the glyphs it can.
+	if layout.input0_t != nil {
+		if !covered_in(layout.input0_t, data, layout.input0_off, buffer.glyphs[pos].glyph_id) {
+			return pos, false
+		}
+	} else if !chain_covered(fc, layout.input_d, 0, data, cov_of(data, subtable_offset, input_at, 0), buffer.glyphs[pos].glyph_id) {
 		return pos, false
 	}
 	at := pos
@@ -246,7 +286,7 @@ chained_context_pos_match_at :: proc(
 chained_pos_match_12 :: proc(
 	gpos: ^ttf.GPOS_Table,
 	subtable_offset: uint,
-	layout: Chain_Layout,
+	layout: ^Chain_Layout,
 	buffer: ^Shaping_Buffer,
 	pos: int,
 	fc: ^Font_Cache,
@@ -310,7 +350,7 @@ chained_pos_match_12 :: proc(
 chained_pos_try_rule :: proc(
 	gpos: ^ttf.GPOS_Table,
 	subtable_offset: uint,
-	layout: Chain_Layout,
+	layout: ^Chain_Layout,
 	buffer: ^Shaping_Buffer,
 	pos: int,
 	rule: uint,
@@ -327,7 +367,7 @@ chained_pos_try_rule :: proc(
 	// `which`: 0 backtrack, 1 input, 2 lookahead -- they use different class
 	// definitions, and using the input one throughout silently matches the
 	// wrong thing rather than failing.
-	match_one :: proc(layout: Chain_Layout, data: []byte, which: int, val: u16, g: Glyph) -> bool {
+	match_one :: proc(layout: ^Chain_Layout, data: []byte, which: int, val: u16, g: Glyph) -> bool {
 		if layout.format == 1 {return Glyph(val) == g}
 		cd := layout.input_cd
 		t := layout.input_t
@@ -445,7 +485,10 @@ apply_chained_context_pos_lookup :: proc(
 		}
 
 		advanced := false
-		for st in la.subtables {
+		// Indexed rather than by value: the element holds a `Chain_Layout`, and
+		// the matcher wants a pointer to it rather than a copy.
+		for si in 0 ..< len(la.subtables) {
+			st := &la.subtables[si]
 			// The subtable's own digest, so a lookup whose union hit still
 			// rejects the subtables that cannot.
 			if !gpos_may_cover(fc, st.digest, g.glyph_id) {continue}
@@ -455,7 +498,7 @@ apply_chained_context_pos_lookup :: proc(
 				last_input, matched = chained_context_pos_match_at(
 					gpos,
 					st.offset,
-					st.chain,
+					&st.chain,
 					buffer,
 					pos,
 					fc,
@@ -464,7 +507,7 @@ apply_chained_context_pos_lookup :: proc(
 				last_input, matched = chained_pos_match_12(
 					gpos,
 					st.offset,
-					st.chain,
+					&st.chain,
 					buffer,
 					pos,
 					fc,

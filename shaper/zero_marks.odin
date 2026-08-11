@@ -47,24 +47,9 @@ zero_marks_policy :: proc(script: Script_Tag) -> Zero_Marks {
 	case .mymr:
 		return .Early
 
-	// The Universal Shaping Engine, which zeroes BEFORE positioning. Taken from
-	// the script list HarfBuzz routes to `_hb_ot_shaper_use`
-	// (`hb-ot-shaper.hh`); Sinhala is in it, which is why it is NOT in the
-	// Indic case above despite being a Brahmic script runic reorders.
-	case
-	     .tibt, .mong, .sinh, .buhd, .hano, .tglg,
-	     .tagb, .limb, .tale, .bugi, .khar, .sylo,
-	     .tfng, .bali, .nkoo, .phag, .cham, .kali,
-	     .lepc, .rjng, .saur, .sund, .egyp, .java,
-	     .kthi, .mtei, .lana, .tavt, .batk, .brah,
-	     .mand, .cakm, .plrd, .shrd, .takr, .dupl,
-	     .gran, .khoj, .sind, .mahj, .mani, .modi,
-	     .hmng, .phlp, .sidd, .tirh, .ahom, .mult,
-	     .adlm, .bhks, .marc, .newa, .gonm, .soyo,
-	     .zanb, .dogr, .gong, .rohg, .maka, .medf,
-	     .sogo, .sogd, .elym, .nand, .hmnp, .wcho,
-	     .chrs, .diak, .kits, .yezi, .ougr:
-		return .Early
+	// The Universal Shaping Engine zeroes BEFORE positioning.
+	case:
+		if is_use_script(script) {return .Early}
 	}
 
 	// Everything else is HarfBuzz's default shaper -- and so are Arabic, Hebrew

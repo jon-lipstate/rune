@@ -1,7 +1,9 @@
 package editor
 
+import "../engine"
 import "../renderer"
 import "../shaper"
+import "../text"
 import "../ttf"
 import "./gap_buffer"
 import "base:runtime"
@@ -39,13 +41,23 @@ Editor :: struct {
 	
 	// Frame-cached shaping data (for cursor positioning)
 	current_viewport_text: Viewport_Text,
-	current_shaped_viewport: ^shaper.Shaping_Buffer,
+	// The laid-out viewport for this frame: bidi resolved, runs itemized by
+	// script, lines broken. Cursor placement reads it rather than re-shaping.
+	current_lines: []engine.Line,
 	viewport_line_boundaries: [dynamic]int, // Permanent allocation for line boundaries
 }
 
 Global_State :: struct {
 	ogl_renderer: renderer.OpenGL_Renderer,
-	engine: ^shaper.Engine,
+	// Not named `engine`: a field of that name shadows the PACKAGE `engine`
+	// inside the struct body, and every `engine.Foo` after it fails to resolve.
+	// `engine/engine.odin` records the same trap for its own `sh` field.
+	sh: ^shaper.Engine,
+	// The layout engine: bidi, script itemization and UAX #14 line breaking on
+	// top of the shaper. The editor used the shaper directly and so got a
+	// default Latin script for every run and logical order for every language.
+	te: ^engine.Engine,
+	te_font_id: shaper.Font_ID,
 	face: ^renderer.OpenGL_Font_Face_Instance,
 	font_id: shaper.Font_ID,
 	font:    ^ttf.Font, // owned here; the shaper engine only borrows it
@@ -113,8 +125,8 @@ setup :: proc() -> bool {
 		return false
 	}
 
-	state.engine = shaper.create_engine()
-	if state.engine == nil {
+	state.sh = shaper.create_engine()
+	if state.sh == nil {
 		fmt.println("Failed to create shaping engine")
 		return false
 	}
@@ -127,9 +139,21 @@ setup :: proc() -> bool {
 
 	state.font = font
 	reg_ok: bool
-	state.font_id, reg_ok = shaper.register_font(state.engine, font)
+	state.font_id, reg_ok = shaper.register_font(state.sh, font)
 	if !reg_ok {
 		fmt.println("Failed to register font")
+		return false
+	}
+
+	state.te = engine.make_engine()
+	if state.te == nil {
+		fmt.println("Failed to create layout engine")
+		return false
+	}
+	te_reg: bool
+	state.te_font_id, te_reg = engine.register_font(state.te, font)
+	if !te_reg {
+		fmt.println("Failed to register font with the layout engine")
 		return false
 	}
 
@@ -167,8 +191,9 @@ setup :: proc() -> bool {
 }
 
 cleanup :: proc() {
-	if state.engine != nil {
-		shaper.destroy_engine(state.engine)
+	if state.sh != nil {
+		if state.te != nil {engine.destroy_engine(state.te)}
+		shaper.destroy_engine(state.sh)
 	}
 	if state.font != nil {
 		ttf.destroy_font(state.font) // engine borrows; we own
@@ -232,117 +257,88 @@ extract_viewport_text :: proc() -> Viewport_Text {
 	return viewport
 }
 
-// Find glyph indices that correspond to line boundaries in the shaped text
-find_glyph_boundaries_for_lines :: proc(shaped_buf: ^shaper.Shaping_Buffer, line_boundaries: [dynamic]int) -> [dynamic]int {
-	glyph_boundaries := make([dynamic]int, context.temp_allocator)
-	
-	// Always start with glyph 0
-	append(&glyph_boundaries, 0)
-	
-	// For each line boundary (except the first which is always 0)
-	for i in 1..<len(line_boundaries) {
-		byte_pos := line_boundaries[i]
-		
-		// Find the glyph that corresponds to this byte position
-		glyph_index := find_glyph_at_byte_position(shaped_buf, byte_pos)
-		append(&glyph_boundaries, glyph_index)
-	}
-	
-	// Add final boundary (end of all glyphs)
-	append(&glyph_boundaries, len(shaped_buf.glyphs))
-	
-	return glyph_boundaries
-}
-
-// Find which glyph index corresponds to a byte position in the original text
-find_glyph_at_byte_position :: proc(shaped_buf: ^shaper.Shaping_Buffer, byte_pos: int) -> int {
-	// Convert byte position to rune position for cluster comparison
-	rune_pos := byte_pos_to_rune_pos(shaped_buf.text, byte_pos)
-	
-	// Walk through glyphs and use their cluster information (rune-based)
-	for glyph, i in shaped_buf.glyphs {
-		// The cluster field tells us which rune this glyph represents
-		if int(glyph.cluster) >= rune_pos { return i }
-	}
-	// If not found, return the end
-	return len(shaped_buf.glyphs)
-}
+// Lay the viewport out with `engine` and draw it.
+//
+// The old path called `shaper.shape_string` on the whole viewport, which takes a
+// DEFAULT LATIN SCRIPT for every run: Arabic came out unjoined, Hebrew came out
+// in logical order, and anything Brahmic got none of its reordering. Going
+// through `engine` gets bidi (UAX #9), script itemization (UAX #24) and line
+// breaking (UAX #14), because they were already implemented and tested one
+// package over.
+//
+// The width passed is deliberately huge: `engine` then breaks only at hard
+// newlines, which is what this editor did before, so the visual result and the
+// cursor's line arithmetic are unchanged. Soft wrapping is now one constant away
+// rather than a rewrite.
+NO_SOFT_WRAP :: f32(1e9)
 
 render_editor :: proc(screen_width, screen_height: i32) {
 	margin: [2]f32 = {5, 15}
 	start_x: f32 = margin.x - state.editor.scroll_x
 	start_y: f32 = f32(screen_height) - margin.y
-	
-	// Extract all viewport text at once (major optimization: one gap buffer access)
+
 	viewport := extract_viewport_text()
-	
-	// Cache viewport data for cursor positioning
 	state.editor.current_viewport_text = viewport
-	
+	state.editor.current_lines = nil
+
 	if len(viewport.text) == 0 {
-		state.editor.current_shaped_viewport = nil
 		render_all_cursors(screen_width, screen_height)
 		return
 	}
-	
-	// Shape the entire viewport as one string (major optimization: one shaping call!)
-	shaped_viewport, shape_ok := shaper.shape_string(state.engine, state.font_id, viewport.text)
-	defer shaper.release_buffer(state.engine, shaped_viewport)
-	
-	// Cache shaped viewport for cursor positioning
-	state.editor.current_shaped_viewport = shaped_viewport
-	
-	if !shape_ok {
-		fmt.println("DEBUG: Shaping failed")
-		state.editor.current_shaped_viewport = nil
-		return
+
+	style := engine.Style {
+		font = state.te_font_id,
+		size = state.editor.font_size,
 	}
-	
-	// Prepare the shaped text for GPU once (major optimization: one GPU upload!)
-	prep_ok := renderer.prepare_shaped_text(&state.ogl_renderer, state.face, shaped_viewport)
-	if !prep_ok {
-		fmt.println("DEBUG: GPU prep failed")
-		state.editor.current_shaped_viewport = nil
-		return
-	}
-	
-	// Find glyph boundaries corresponding to line boundaries
-	glyph_line_boundaries := find_glyph_boundaries_for_lines(shaped_viewport, viewport.line_boundaries)
-	defer delete(glyph_line_boundaries)
-	
-	// Render each line using render buffers (no allocation approach)
+	lines := engine.layout_paragraph(
+		state.te,
+		viewport.text,
+		style,
+		NO_SOFT_WRAP,
+		context.temp_allocator,
+	)
+	state.editor.current_lines = lines
+
+	// One scratch list, refilled per line. `Positioned_Glyph` carries a cluster
+	// and a bidi level the renderer has no use for; it wants a glyph and a
+	// place to put it.
+	placed := make([dynamic]renderer.Placed_Glyph, 0, 256, context.temp_allocator)
+
 	cursor_y: f32 = start_y
-	for i in 0..<len(glyph_line_boundaries) {
-		if i + 1 >= len(glyph_line_boundaries) {break} // Need pairs of boundaries
-		
-		glyph_start := glyph_line_boundaries[i]
-		glyph_end := glyph_line_boundaries[i + 1]
-		
-		// Skip empty lines
-		if glyph_start >= glyph_end {
-			cursor_y -= state.editor.line_height
-			continue
+	for line in lines {
+		if len(line.glyphs) > 0 {
+			clear(&placed)
+			for g in line.glyphs {
+				append(
+					&placed,
+					renderer.Placed_Glyph {
+						glyph = shaper.Glyph(g.glyph),
+						x = g.x,
+						y = g.y,
+					},
+				)
+			}
+
+			if renderer.prepare_placed_glyphs(&state.ogl_renderer, state.face, placed[:]) {
+				rb := renderer.Render_Buffer {
+					placed = placed[:],
+				}
+				renderer.render_text_2d(
+					&state.ogl_renderer,
+					state.face,
+					&rb,
+					int(screen_width),
+					int(screen_height),
+					{start_x, cursor_y},
+					{1.0, 1.0, 1.0, 1.0},
+				)
+			}
 		}
-		
-		// Create a render buffer (slice view, no allocation)
-		line_render_buf := renderer.create_render_buffer(shaped_viewport, glyph_start, glyph_end)
-		
-		// Render using the render buffer directly
-		renderer.render_text_2d(
-			&state.ogl_renderer,
-			state.face,
-			&line_render_buf,
-			int(screen_width),
-			int(screen_height),
-			{start_x, cursor_y},
-			{1.0, 1.0, 1.0, 1.0},
-		)
-		
 		cursor_y -= state.editor.line_height
 	}
-	
+
 	render_all_cursors(screen_width, screen_height)
-	
+
 	// Free temp allocator after all rendering is done
 	free_all(context.temp_allocator)
 }
@@ -372,60 +368,37 @@ render_cursor_at_position :: proc(cursor_pos: gap_buffer.LogicalPosition, screen
 	// Calculate cursor Y position based on line within viewport
 	cursor_y := start_y - f32(viewport_relative_line) * state.editor.line_height
 	
-	// Calculate cursor X position using cached shaped viewport
-	if state.editor.current_shaped_viewport != nil && len(state.editor.current_viewport_text.text) > 0 {
-		// Find which line the cursor is on by finding the rightmost boundary <= cursor
-		line_start_in_viewport := 0
-		for i in 0..<len(state.editor.current_viewport_text.line_boundaries) {
-			boundary := state.editor.current_viewport_text.line_boundaries[i]
-			line_start_buffer_pos := state.editor.viewport_start_pos + gap_buffer.LogicalPosition(boundary)
-			
-			// If this boundary is beyond the cursor, stop
-			if line_start_buffer_pos > cursor_pos {break}
-			
-			// This boundary is <= cursor_pos, so it's a candidate
-			line_start_in_viewport = boundary
-		}
-		
-		// Calculate cursor position within its line, then convert to viewport rune position
-		cursor_pos_in_line := cursor_pos - (state.editor.viewport_start_pos + gap_buffer.LogicalPosition(line_start_in_viewport))
-		
-		// Get the text of just this line
-		line_text := state.editor.current_viewport_text.text[line_start_in_viewport:]
-		line_rune_pos := byte_pos_to_rune_pos(line_text, int(cursor_pos_in_line))
-		
-		// Convert to viewport rune position by adding the line start offset
-		viewport_line_start_rune_pos := byte_pos_to_rune_pos(state.editor.current_viewport_text.text, line_start_in_viewport)
-		viewport_rune_pos := viewport_line_start_rune_pos + line_rune_pos
-		
-		if cursor_pos_in_line >= 0 {
-			// Walk through glyphs in cluster order and sum advances until cursor position
-			// BUT only within the current line (from line start to cursor position)
-			text_width: f32 = 0
-			
-			line_start_rune_pos := viewport_line_start_rune_pos
-			cursor_rune_pos := viewport_line_start_rune_pos + line_rune_pos
-			
-			for target_cluster in line_start_rune_pos..<cursor_rune_pos {
-				for pos, i in state.editor.current_shaped_viewport.positions {
-					glyph := state.editor.current_shaped_viewport.glyphs[i]
-					if int(glyph.cluster) == target_cluster {
-						text_width += f32(pos.x_advance) * state.face.scale_factor
-						break // Found glyph for this cluster
-					}
-				}
+	// Caret X, from the laid-out lines.
+	//
+	// This used to walk the shaped viewport summing advances cluster by cluster,
+	// converting byte positions to rune positions on the way because the shaper
+	// numbers clusters by rune. `engine` reports a BYTE offset per glyph and has
+	// already applied the advances, so the caret is a lookup: find the line that
+	// contains the cursor, then the first glyph at or past it.
+	//
+	// It also works for right-to-left text, which the advance-summing version
+	// could not -- there the glyph at a byte offset is not the sum of what came
+	// before it in logical order.
+	cursor_off := int(cursor_pos - state.editor.viewport_start_pos)
+	for line in state.editor.current_lines {
+		if cursor_off < line.lo || cursor_off > line.hi {continue}
+
+		// Past the last glyph of the line: the caret sits at its end.
+		x := line.width
+		for g in line.glyphs {
+			if g.cluster >= cursor_off {
+				x = g.x
+				break
 			}
-			cursor_x += text_width
-			
-			// Small offset to account for cursor character's left bearing
-			cursor_x -= 2.0 // TODO: use cursor char's lsb
 		}
+		cursor_x += x
+		break
 	}
-	
+
 	cursor_char := "|"
 
-    shaped_cursor, shape_ok := shaper.shape_string(state.engine, state.font_id, cursor_char)
-	defer shaper.release_buffer(state.engine, shaped_cursor)
+    shaped_cursor, shape_ok := shaper.shape_string(state.sh, state.font_id, cursor_char)
+	defer shaper.release_buffer(state.sh, shaped_cursor)
 	
 	if shape_ok {
 		prep_ok := renderer.prepare_shaped_text(&state.ogl_renderer, state.face, shaped_cursor)
@@ -581,11 +554,21 @@ insert_at_active_cursor :: proc(codepoint: rune) {
 }
 
 // Delete at the active cursor and update all virtual cursors  
+// Backspace removes a whole GRAPHEME CLUSTER.
+//
+// Deleting one rune off the end of "e" + combining acute leaves the acute
+// behind, attached to whatever now precedes it. Same for an emoji ZWJ sequence,
+// where it leaves half a family. The cluster is what the user sees and so is
+// what backspace takes.
 delete_at_active_cursor :: proc() {
 	if get_active_cursor_pos() == 0 {return}
 	
 	old_pos := get_active_cursor_pos()
-	new_pos := gap_buffer.delete_runes_backwards_cursor(&state.editor.buffer, old_pos, 1)
+	new_pos := gap_buffer.delete_runes_backwards_cursor(
+		&state.editor.buffer,
+		old_pos,
+		runes_in_cluster_before(old_pos),
+	)
 	length_change := int(new_pos - old_pos) // Will be negative
 	
 	// Update active cursor position
@@ -785,103 +768,88 @@ find_line_number_at_position :: proc(pos: gap_buffer.LogicalPosition) -> int {
 }
 
 // Glyph-aware cursor movement functions
+// Move the cursor one GRAPHEME CLUSTER, not one rune.
+//
+// A rune is not a cursor step. "e" followed by U+0301 COMBINING ACUTE is one
+// thing on screen and one thing to delete; so is a flag, a family emoji, a
+// Devanagari syllable with a nukta and a matra. Stepping by rune parks the
+// cursor inside them and deletes half a character.
+//
+// `text` implements UAX #29 and passes the Unicode conformance suite
+// (766/766), so this is a matter of asking it rather than of the editor
+// guessing. The previous code did neither: it stepped one rune and left the
+// glyph-cluster version commented out beneath, which had tried to derive
+// boundaries from SHAPED output -- the wrong source, since a cluster is a
+// property of the text and exists whether or not a font was involved.
+//
+// The query itself lives in `text.prev_grapheme_boundary`, where it is tested
+// against the conformance suite rather than only by running the editor.
 move_cursor_left :: proc() -> gap_buffer.LogicalPosition {
 	current_pos := get_active_cursor_pos()
-	
-	if current_pos == 0 {
-		return 0
-	}
-	
-	// SIMPLIFIED: Just move backward by one rune for now
-	new_pos := gap_buffer.move_cursor_backward(&state.editor.buffer, current_pos, 1)
-	return new_pos
-	
-	/* ORIGINAL GLYPH-AWARE CODE - temporarily disabled
-	// Get the current line that contains the cursor
+	if current_pos == 0 {return 0}
+
 	line_start := find_line_start(current_pos)
+	// At the very start of a line the previous boundary is the newline before
+	// it, which is one byte back.
+	if current_pos == line_start {
+		return gap_buffer.move_cursor_backward(&state.editor.buffer, current_pos, 1)
+	}
+
 	line_text := get_line_text(line_start)
-	defer delete(line_text)
-	
-	if len(line_text) == 0 {
+	offset := int(current_pos - line_start)
+	if offset <= 0 || offset > len(line_text) {
 		return gap_buffer.move_cursor_backward(&state.editor.buffer, current_pos, 1)
 	}
-	
-	// Shape the line to get glyph cluster information
-	shaped_line, shape_ok := shaper.shape_string(state.engine, state.font_id, line_text)
-	defer shaper.release_buffer(state.engine, shaped_line)
-	
-	if !shape_ok {
-		return gap_buffer.move_cursor_backward(&state.editor.buffer, current_pos, 1)
-	}
-	
-	// Find the glyph cluster just before current cursor position
-	cursor_offset_in_line := current_pos - line_start
-	target_cluster := uint(cursor_offset_in_line)
-	
-	// Find the previous cluster boundary
-	for i := len(shaped_line.glyphs) - 1; i >= 0; i -= 1 {
-		glyph := shaped_line.glyphs[i]
-		if glyph.cluster < target_cluster {
-			return line_start + gap_buffer.LogicalPosition(glyph.cluster)
-		}
-	}
-	
-	// If no previous cluster found, move to start of line or previous line
-	if line_start == 0 {
-		return 0
-	}
-	return line_start - 1 // Move to end of previous line
-	*/
+
+	return line_start + gap_buffer.LogicalPosition(text.prev_grapheme_boundary(line_text, offset))
 }
 
+// How many RUNES the cluster ending at `pos` spans; at least one.
+//
+// The gap buffer counts in runes, `text` reports byte offsets, and a cluster is
+// neither -- so the conversion has to happen somewhere and it happens here.
+runes_in_cluster_before :: proc(pos: gap_buffer.LogicalPosition) -> int {
+	line_start := find_line_start(pos)
+	if pos == line_start {return 1} 	// the newline before this line
+	line_text := get_line_text(line_start)
+	offset := int(pos - line_start)
+	if offset <= 0 || offset > len(line_text) {return 1}
+	prev := text.prev_grapheme_boundary(line_text, offset)
+	n := utf8.rune_count_in_string(line_text[prev:offset])
+	return max(n, 1)
+}
+
+// The same, forward.
+runes_in_cluster_after :: proc(pos: gap_buffer.LogicalPosition) -> int {
+	line_start := find_line_start(pos)
+	line_text := get_line_text(line_start)
+	offset := int(pos - line_start)
+	if offset < 0 || offset >= len(line_text) {return 1} 	// the newline
+	next := text.next_grapheme_boundary(line_text, offset)
+	n := utf8.rune_count_in_string(line_text[offset:next])
+	return max(n, 1)
+}
+
+// The forward half of `move_cursor_left`; see the note there.
 move_cursor_right :: proc() -> gap_buffer.LogicalPosition {
 	current_pos := get_active_cursor_pos()
 	buffer_len := gap_buffer.buffer_length(&state.editor.buffer)
-	
-	if int(current_pos) >= buffer_len {
-		return current_pos
-	}
-	
-	// SIMPLIFIED: Just move forward by one rune for now
-	new_pos := gap_buffer.move_cursor_forward(&state.editor.buffer, current_pos, 1)
-	return new_pos
-	
-	/* ORIGINAL GLYPH-AWARE CODE - temporarily disabled
-	// Get the current line that contains the cursor
+	if int(current_pos) >= buffer_len {return current_pos}
+
 	line_start := find_line_start(current_pos)
 	line_text := get_line_text(line_start)
-	defer delete(line_text)
-	
-	if len(line_text) == 0 {
+	offset := int(current_pos - line_start)
+
+	// Past the last cluster of the line: step over the newline.
+	if offset >= len(line_text) {
 		return gap_buffer.move_cursor_forward(&state.editor.buffer, current_pos, 1)
 	}
-	
-	// Shape the line to get glyph cluster information
-	shaped_line, shape_ok := shaper.shape_string(state.engine, state.font_id, line_text)
-	defer shaper.release_buffer(state.engine, shaped_line)
-	
-	if !shape_ok {
-		return gap_buffer.move_cursor_forward(&state.editor.buffer, current_pos, 1)
+
+	next := text.next_grapheme_boundary(line_text, offset)
+	if next > offset && next <= len(line_text) {
+		return line_start + gap_buffer.LogicalPosition(next)
 	}
-	
-	// Find the glyph cluster just after current cursor position
-	cursor_offset_in_line := current_pos - line_start
-	target_cluster := uint(cursor_offset_in_line)
-	
-	// Find the next cluster boundary
-	for glyph in shaped_line.glyphs {
-		if glyph.cluster > target_cluster {
-			return line_start + gap_buffer.LogicalPosition(glyph.cluster)
-		}
-	}
-	
-	// If no next cluster found, move to next line or end of buffer
-	line_end := line_start + gap_buffer.LogicalPosition(len(line_text))
-	if line_end < buffer_len {
-		return line_end + 1 // Move to start of next line
-	}
-	return buffer_len
-	*/
+	return gap_buffer.move_cursor_forward(&state.editor.buffer, current_pos, 1)
 }
 
 find_line_start :: proc(pos: gap_buffer.LogicalPosition) -> gap_buffer.LogicalPosition {
@@ -962,11 +930,11 @@ delete_forward_at_active_cursor :: proc() {
 	
 	if int(cursor_pos) >= buffer_len {return} // At end of buffer
 	
-	// Delete one rune forward
-	gap_buffer.delete_runes_at(&state.editor.buffer, cursor_pos, 1)
+	// A whole cluster forward, for the reason on `delete_at_active_cursor`.
+	n := runes_in_cluster_after(cursor_pos)
+	gap_buffer.delete_runes_at(&state.editor.buffer, cursor_pos, n)
 	
-	// Update virtual cursors (deletion at cursor position affects positions after it)
-	update_virtual_cursors(cursor_pos, -1) // -1 for one character deleted
+	update_virtual_cursors(cursor_pos, -n)
 }
 
 // Move cursor up one line, trying to maintain preferred column
@@ -1091,19 +1059,6 @@ move_cursor_to_line_end :: proc() {
 	update_preferred_column()
 }
 
-// Helper function to convert byte position to rune position in a string
-byte_pos_to_rune_pos :: proc(text: string, byte_pos: int) -> int {
-	rune_pos := 0
-	byte_count := 0
-	for r in text {
-		if byte_count >= byte_pos {
-			break
-		}
-		byte_count += utf8.rune_size(r)
-		rune_pos += 1
-	}
-	return rune_pos
-}
 
 process_input :: proc(window: glfw.WindowHandle) {
 	if glfw.GetKey(window, glfw.KEY_ESCAPE) == glfw.PRESS {

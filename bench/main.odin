@@ -971,6 +971,13 @@ loop_one :: proc(w: Workload) {
 			if ns != 0 {fmt.printfln("    %-10v %8.3f us", ph, f64(ns) / 1000 / f64(DIAG_ITERS))}
 		}
 		fmt.printfln(
+			"    gsub lookups: %.1f run, %.1f rejected whole; gpos %.1f run, %.1f rejected",
+			f64(shaper.gsub_lookups_run) / f64(DIAG_ITERS),
+			f64(shaper.gsub_lookups_rejected) / f64(DIAG_ITERS),
+			f64(shaper.gpos_lookups_run) / f64(DIAG_ITERS),
+			f64(shaper.gpos_lookups_rejected) / f64(DIAG_ITERS),
+		)
+		fmt.printfln(
 			"    contextual subtables: %.1f seen, %.1f rejected by buffer digest",
 			f64(shaper.gsub_ctx_subtables) / f64(DIAG_ITERS),
 			f64(shaper.gsub_ctx_rejected) / f64(DIAG_ITERS),
@@ -1143,6 +1150,18 @@ main :: proc() {
 		if a == "--arabic" {arabic_diag();return}
 		// One workload, warm, many times: a clean profile target with no other
 		// implementation's code in the sample.
+		// By NAME, not by index: the index form silently pointed at whatever
+		// happened to sit there after a workload was added, and profiled the
+		// wrong thing without saying so.
+		if strings.has_prefix(a, "--loop=") {
+			want := a[len("--loop="):]
+			for w in WORKLOADS {
+				if w.name == want {loop_one(w);return}
+			}
+			fmt.eprintfln("no workload named %q", want)
+			for w in WORKLOADS {fmt.eprintfln("  %s", w.name)}
+			return
+		}
 		if a == "--loop-urdu" {loop_one(WORKLOADS[len(WORKLOADS) - 2]);return}
 		if a == "--loop-latin" {loop_one(WORKLOADS[1]);return}
 		if a == "--loop-music" {

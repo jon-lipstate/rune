@@ -34,31 +34,37 @@ Pair_Prepared :: struct {
 // is what the code did for all of them until now.
 MAX_PAIR_SUBTABLES :: 8
 
+// Resolve everything about a pair subtable that does not depend on the buffer.
+//
+// Called once per subtable per FONT, from the lookup accelerator. It used to run
+// per shaping call, and `cover_table`/`class_table` are map lookups, so each
+// call re-hashed its way to the same slices.
 @(private)
-prepare_pair_subtable :: proc(
+prepare_pair_subtable_at :: proc(
 	gpos: ^ttf.GPOS_Table,
-	st: Gpos_Subtable_Accel,
+	offset: uint,
+	digest: Digest_Ref,
 	fc: ^Font_Cache,
 ) -> (
 	out: Pair_Prepared,
 	ok: bool,
 ) {
 	data := gpos.raw_data
-	if st.offset + 4 > uint(len(data)) {return {}, false}
-	format := ttf.read_u16(data, st.offset)
+	if offset + 4 > uint(len(data)) {return {}, false}
+	format := ttf.read_u16(data, offset)
 	if format != 1 && format != 2 {return {}, false}
 
-	out.offset = st.offset
+	out.offset = offset
 	out.format = format
-	out.digest = st.digest
-	out.cov_off = st.offset + uint(ttf.read_u16(data, st.offset + 2))
+	out.digest = digest
+	out.cov_off = offset + uint(ttf.read_u16(data, offset + 2))
 	out.covt = cover_table(fc, out.cov_off)
-	out.layout = pair_layout(data, st.offset, format) or_return
+	out.layout = pair_layout(data, offset, format) or_return
 
 	if format == 2 {
-		if st.offset + 16 > uint(len(data)) {return {}, false}
-		out.class_def1 = st.offset + uint(ttf.read_u16(data, st.offset + 8))
-		out.class_def2 = st.offset + uint(ttf.read_u16(data, st.offset + 10))
+		if offset + 16 > uint(len(data)) {return {}, false}
+		out.class_def1 = offset + uint(ttf.read_u16(data, offset + 8))
+		out.class_def2 = offset + uint(ttf.read_u16(data, offset + 10))
 		out.ct1 = class_table(fc, out.class_def1)
 		out.ct2 = class_table(fc, out.class_def2)
 	}
@@ -289,12 +295,13 @@ apply_pair_pos_lookup :: proc(
 	buffer: ^Shaping_Buffer,
 	fc: ^Font_Cache,
 ) -> bool {
+	// Already resolved, once, when the lookup accelerator was built.
 	prepared: [MAX_PAIR_SUBTABLES]Pair_Prepared
 	n := 0
 	for st in la.subtables {
 		if n >= MAX_PAIR_SUBTABLES {break}
-		if p, ok := prepare_pair_subtable(gpos, st, fc); ok {
-			prepared[n] = p
+		if st.pair_ok {
+			prepared[n] = st.pair
 			n += 1
 		}
 	}

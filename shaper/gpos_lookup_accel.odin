@@ -31,6 +31,16 @@ Gpos_Subtable_Accel :: struct {
 	// NO_DIGEST for types whose coverage is not at offset 2 (Context,
 	// ChainedContext, Extension).
 	digest: Digest_Ref,
+	// PairPos state, resolved once per font: the coverage and class-definition
+	// memo tables plus the value-record layout.
+	//
+	// `prepare_pair_subtable` used to run per SHAPING CALL, and `cover_table`
+	// and `class_table` are map lookups -- so every pair subtable paid two or
+	// three hashes on every call to arrive at the same slices as last time.
+	// That was 7% of a Latin workload, in a procedure whose whole purpose is to
+	// avoid per-glyph work.
+	pair:        Pair_Prepared,
+	pair_ok:     bool,
 	// ChainedContext format 3 layout, resolved once. The matcher is called per
 	// POSITION per subtable, so re-deriving these counts and array offsets from
 	// the font each time is the same waste as re-parsing a lookup header per
@@ -78,6 +88,15 @@ Chain_Layout :: struct {
 	back_d:      []Digest_Ref,
 	input_d:     []Digest_Ref,
 	look_d:      []Digest_Ref,
+	// The FIRST input coverage, memoised per glyph.
+	//
+	// It is tested at every buffer position for every subtable -- Noto Nastaliq
+	// Urdu has 21 chained lookups over 372 subtables, so a line of 81 glyphs
+	// asks this question tens of thousands of times, and each one was a binary
+	// search over the raw font table. The other coverages are only reached once
+	// the first has matched, which is rare, so only this one is worth the array.
+	input0_t:    []u8,
+	input0_off:  uint,
 }
 
 // Parse a ChainedSequenceContext header once, whichever format it is.
@@ -179,6 +198,15 @@ intern_chain_digests :: proc(
 			out[i] = intern_digest(&fc.gpos_digests, data, cov)
 		}
 		return out
+	}
+
+	// Position 0's coverage, resolved once for the subtable.
+	if layout.format == 3 && layout.input_count > 0 {
+		off := subtable_offset + uint(ttf.read_u16(data, layout.input_at))
+		if off + 4 <= uint(len(data)) {
+			layout.input0_off = off
+			layout.input0_t = cover_table(fc, off)
+		}
 	}
 
 	layout.back_d = fill(
@@ -298,6 +326,11 @@ gpos_lookup_accel :: proc(
 		} else {
 			all_digested = false
 		}
+		pair: Pair_Prepared
+		pair_ok := false
+		if st_type == .Pair {
+			pair, pair_ok = prepare_pair_subtable_at(gpos, subtable_offset, d, fc)
+		}
 		chain: Chain_Layout
 		if st_type == .ChainedContext {
 			chain = parse_chain_layout(gpos.raw_data, subtable_offset)
@@ -309,6 +342,8 @@ gpos_lookup_accel :: proc(
 				offset = subtable_offset,
 				lookup_type = st_type,
 				digest = d,
+				pair = pair,
+				pair_ok = pair_ok,
 				chain = chain,
 			},
 		)

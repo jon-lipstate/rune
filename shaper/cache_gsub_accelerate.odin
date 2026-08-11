@@ -37,10 +37,19 @@ Coverage_Digest :: struct {
 	// the glyph is definitely not in the coverage
 	digest:        [8]u32, // 256-bit digest
 
-	// For small coverage sets, direct map is more efficient
-	direct_map:    map[Glyph]bool,
-
-	// Optional sorted array for binary search (for larger sets)
+	// The covered glyphs, SORTED. One array, no map.
+	//
+	// This was a `map[Glyph]bool` built for every coverage, plus a sorted array
+	// built only above 50 glyphs -- and `is_glyph_in_coverage` tested the map
+	// first, so the binary search was dead code and every membership test was a
+	// hash. Adwaita Sans's `calt` lookup 52 is 61 subtables whose input
+	// coverage is a SINGLE GLYPH each: 26 survive rejection on a short word, so
+	// one shaping call paid ~286 hashes to ask 286 times whether a glyph equals
+	// one other glyph.
+	//
+	// A sorted array answers both shapes well: a linear scan while the set fits
+	// in a cache line, a binary search above that. It also drops one map
+	// allocation per coverage table in the font.
 	sorted_glyphs: []Glyph,
 }
 
@@ -57,11 +66,22 @@ Single_Subst_Accelerator :: struct {
 Ligature_Subst_Accelerator :: struct {
 	format:          ttf.GSUB_Lookup_Type,
 
-	// Quick bitmap to check if a glyph could start a ligature
-	starts_ligature: map[Glyph]bool,
-
-	// Map from first glyph to all possible sequences with that first glyph
-	ligature_map:    map[Glyph][dynamic]Ligature_Sequence,
+	// First glyph -> the sequences that start with it, as a two-level index:
+	// `seqs[starts[g] : starts[g+1]]`.
+	//
+	// This was two maps (a `map[Glyph]bool` gate and a
+	// `map[Glyph][dynamic]Ligature_Sequence`), so every glyph of every ligature
+	// lookup paid two hashes -- 10% of a ligature-heavy workload. A dense array
+	// answers the same question with an index.
+	//
+	// But dense of WHAT matters. A `[][dynamic]Ligature_Sequence` costs a
+	// 40-byte header per glyph id up to the highest ligature starter, occupied
+	// or not, and measured 395 KB of Adwaita Sans's 596 KB font cache -- most
+	// of it empty headers. `starts` is 4 bytes per glyph and `seqs` holds only
+	// the sequences that exist, which is a tenth of the memory for the same
+	// lookup cost.
+	starts:          []u32, // len is highest starter + 2, or 0 when empty
+	seqs:            []Ligature_Sequence,
 }
 
 Ligature_Sequence :: struct {
@@ -264,7 +284,7 @@ build_coverage_digest :: proc(data: []byte, coverage_offset: uint) -> Coverage_D
 	digest: Coverage_Digest
 
 	// Initialize 256-bit digest (8 u32s) to zeros
-	digest.direct_map = make(map[Glyph]bool)
+
 
 	// Read coverage format
 	if coverage_offset + 2 > uint(len(data)) {
@@ -308,10 +328,7 @@ build_coverage_digest :: proc(data: []byte, coverage_offset: uint) -> Coverage_D
 			bit_pos := glyph_id % 32
 			digest.digest[digest_idx] |= (1 << bit_pos)
 
-			glyph := Glyph(e.glyph)
-			// Add to direct map for small coverage sets
-			digest.direct_map[glyph] = true
-			append(&glyphs, glyph)
+			append(&glyphs, Glyph(e.glyph))
 
 		case ttf.Coverage_Format2_Entry:
 			// Add all glyphs in the range
@@ -322,15 +339,13 @@ build_coverage_digest :: proc(data: []byte, coverage_offset: uint) -> Coverage_D
 				digest.digest[digest_idx] |= (1 << bit_pos)
 
 				glyph := Glyph(gid)
-				// Add to direct map for small coverage sets
-				digest.direct_map[glyph] = true
 				append(&glyphs, glyph)
 			}
 		}
 	}
 
-	// For larger sets (more than ~50 glyphs), create a sorted array for binary search
-	if len(digest.direct_map) > 50 {
+	// Always, and sorted: this IS the membership test now.
+	if len(glyphs) > 0 {
 		digest.sorted_glyphs = make([]Glyph, len(glyphs))
 		copy(digest.sorted_glyphs, glyphs[:])
 		slice.sort(digest.sorted_glyphs)
@@ -415,7 +430,7 @@ accelerate_single_subtable :: proc(
 		single_accel.delta_value = delta_glyph_id
 
 		// Pre-compute all mappings (order-independant; same delta to everyone)
-		for glyph, _ in digest_at(&accel.digests, single_accel.coverage).direct_map {
+		for glyph in digest_at(&accel.digests, single_accel.coverage).sorted_glyphs {
 			result_glyph := Glyph(int(glyph) + int(delta_glyph_id))
 			single_accel.mapping[glyph] = result_glyph
 		}
@@ -717,18 +732,20 @@ accelerate_ligature_subtable :: proc(
 
 	// Initialize accelerator
 	lig_accel := Ligature_Subst_Accelerator {
-		format          = .Ligature,
-		starts_ligature = make(map[Glyph]bool),
-		ligature_map    = make(map[Glyph][dynamic]Ligature_Sequence),
+		format = .Ligature,
 	}
 
-	// Process the coverage as starting glyphs for ligatures
-	for glyph, _ in digest_at(&accel.digests, intern_digest(&accel.digests, gsub.raw_data, abs_coverage_offset)).direct_map {
-		lig_accel.starts_ligature[glyph] = true
+	// The coverage is the set of glyphs that can begin a ligature; sorted, so
+	// the last entry is the highest and bounds the index.
+	cov := digest_at(&accel.digests, intern_digest(&accel.digests, gsub.raw_data, abs_coverage_offset)).sorted_glyphs
+	highest := len(cov) > 0 ? cov[len(cov) - 1] : Glyph(0)
 
-		// Initialize empty dynamic array for this glyph
-		lig_accel.ligature_map[glyph] = make([dynamic]Ligature_Sequence)
+	// Collected flat, then counting-sorted into the two-level index below.
+	Pending :: struct {
+		first: Glyph,
+		seq:   Ligature_Sequence,
 	}
+	pending := make([dynamic]Pending, 0, 32, context.temp_allocator)
 
 	// Coverage INDEX to glyph, built once.
 	//
@@ -822,9 +839,7 @@ accelerate_ligature_subtable :: proc(
 				ligature   = ligature_glyph,
 			}
 
-			// Add to mapping
-			seq_arr := &lig_accel.ligature_map[glyph]
-			append(seq_arr, sequence)
+			append(&pending, Pending{first = glyph, seq = sequence})
 
 			// fmt.printf(
 			// 	"Adding ligature sequence for glyph %v: components %v -> ligature %v\n",
@@ -832,6 +847,26 @@ accelerate_ligature_subtable :: proc(
 			// 	components,
 			// 	ligature_glyph,
 			// )
+		}
+	}
+
+	// Counting sort into `starts` + `seqs`: one pass to count, a prefix sum,
+	// one pass to place.
+	if len(pending) > 0 {
+		n := int(highest) + 2
+		lig_accel.starts = make([]u32, n)
+		for p in pending {
+			if int(p.first) + 1 < n {lig_accel.starts[int(p.first) + 1] += 1}
+		}
+		for i in 1 ..< n {lig_accel.starts[i] += lig_accel.starts[i - 1]}
+
+		lig_accel.seqs = make([]Ligature_Sequence, len(pending))
+		fill := make([]u32, n, context.temp_allocator)
+		copy(fill, lig_accel.starts)
+		for p in pending {
+			if int(p.first) >= n - 1 {continue}
+			lig_accel.seqs[fill[p.first]] = p.seq
+			fill[p.first] += 1
 		}
 	}
 

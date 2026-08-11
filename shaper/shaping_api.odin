@@ -175,11 +175,21 @@ reverse_for_display :: proc(buffer: ^Shaping_Buffer) {
 	}
 }
 
+// The path taken when the font has no GSUB or GPOS table for this script.
+//
+// It still has to finish the job. Hiding the default ignorables and putting a
+// right-to-left run into visual order are properties of the TEXT, not of the
+// font's lookups -- but this path did neither, so an archaic RTL script whose
+// font carries no layout tables at all came out in logical order. Phoenician,
+// Cypriot, Hatran, Nabataean and both Old Arabians were every glyph backwards.
 shape_text_basic_with_buffer :: proc(font: ^Font, buffer: ^Shaping_Buffer) -> (ok: bool) {
 	if buffer == nil {return false}
 
 	// Apply basic positioning
 	apply_basic_positioning(font, buffer, nil)
+
+	hide_default_ignorables(font, nil, buffer)
+	reverse_for_display(buffer)
 
 	return true
 }

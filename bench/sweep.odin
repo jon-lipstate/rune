@@ -371,7 +371,7 @@ sweep :: proc(limit: int) {
 	if limit > 0 && limit < n {n = limit}
 	fmt.printfln("sweeping %d fonts (of %d found)", n, len(paths))
 
-	ran, glyph_bad, pos_bad := 0, 0, 0
+	ran, glyph_bad, pos_bad, not_run := 0, 0, 0, 0
 	for i in 0 ..< n {
 		p := paths[i]
 		// Printed BEFORE shaping, to STDERR, so it is not buffered away when the
@@ -382,7 +382,14 @@ sweep :: proc(limit: int) {
 
 		r := sweep_one(p)
 		free_all(context.temp_allocator)
-		if !r.ran {continue}
+		if !r.ran {
+			// Named, not silently dropped. A font that produces nothing is the
+			// most interesting result the sweep has -- usually a script runic
+			// cannot name -- and the summary counted it without saying which.
+			not_run += 1
+			fmt.printfln("  NORUN   %s", filepath.base(p))
+			continue
+		}
 		ran += 1
 		if !r.glyphs_ok {
 			glyph_bad += 1
@@ -402,7 +409,7 @@ sweep :: proc(limit: int) {
 	}
 
 	fmt.println()
-	fmt.printfln("shaped %d/%d fonts", ran, n)
+	fmt.printfln("shaped %d/%d fonts (%d produced nothing)", ran, n, not_run)
 	fmt.printfln("  glyph disagreements: %d (%.1f%%)", glyph_bad, 100 * f64(glyph_bad) / f64(max(ran, 1)))
 	fmt.printfln("  position-only:       %d (%.1f%%)", pos_bad, 100 * f64(pos_bad) / f64(max(ran, 1)))
 	fmt.printfln(

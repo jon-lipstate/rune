@@ -92,14 +92,85 @@ BRAHMIC_FEATURES := []Feature_Tag {
 	.blwm,
 }
 
+// Is this script shaped by HarfBuzz's Universal Shaping Engine?
+//
+// The list is the one `hb_ot_shaper_categorize` routes to
+// `_hb_ot_shaper_use` (`hb-ot-shaper.hh`). It decides two things that were
+// previously decided separately and inconsistently: when mark advances are
+// zeroed, and WHICH FEATURES the plan asks for. Sinhala is in it despite being
+// a Brahmic script runic reorders; Khmer, Myanmar and the nine Indic scripts
+// are not, because each has its own shaper.
+@(private)
+is_use_script :: proc(script: Script_Tag) -> bool {
+	#partial switch script {
+	case
+	     .tibt, .mong, .sinh, .buhd, .hano, .tglg,
+	     .tagb, .limb, .tale, .bugi, .khar, .sylo,
+	     .tfng, .bali, .nkoo, .phag, .cham, .kali,
+	     .lepc, .rjng, .saur, .sund, .egyp, .java,
+	     .kthi, .mtei, .lana, .tavt, .batk, .brah,
+	     .mand, .cakm, .plrd, .shrd, .takr, .dupl,
+	     .gran, .khoj, .sind, .mahj, .mani, .modi,
+	     .hmng, .phlp, .sidd, .tirh, .ahom, .mult,
+	     .adlm, .bhks, .marc, .newa, .gonm, .soyo,
+	     .zanb, .dogr, .gong, .rohg, .maka, .medf,
+	     .sogo, .sogd, .elym, .nand, .hmnp, .wcho,
+	     .chrs, .diak, .kits, .yezi, .ougr,
+	     // Added once these gained a `Script_Tag`; all are in the same
+	     // HarfBuzz USE list as the rest of this case.
+	     .cpmn, .kawi, .nagm, .tnsa, .todr, .toto,
+	     .vith, .berf, .gukh, .krai, .onao, .sidt,
+	     .sunu, .tayo, .tols, .tutg:
+		return true
+	}
+	return false
+}
+
+// The features HarfBuzz's USE shaper asks for, in its order
+// (`collect_features_use`). Pre-processing, then the reordering pair, then the
+// basic features, then the rest.
+//
+// `isol`/`init`/`medi`/`fina` are absent on purpose: USE requests them only for
+// the scripts that JOIN, and `is_joining_script` already routes those to the
+// Arabic stage table which has them.
+//
+// Without this a USE script fell back to `COMMON_FEATURES` alone, so a font
+// doing its work in `psts` or `blws` did none of it. Noto Sans Khojki picks its
+// post-base alternates through `psts` -> lookup 27 -> lookup 0, and never got
+// the chance.
+@(private)
+USE_FEATURES := []Feature_Tag {
+	.locl,
+	.ccmp,
+	.nukt,
+	.akhn,
+	.rphf,
+	.pref,
+	.rkrf,
+	.abvf,
+	.blwf,
+	.half,
+	.pstf,
+	.vatu,
+	.cjct,
+	.abvs,
+	.blws,
+	.haln,
+	.pres,
+	.psts,
+}
+
 // The features `script` requires beyond the caller's set.
 script_default_features :: proc(script: Script_Tag) -> []Feature_Tag {
 	#partial switch script {
 	case .deva, .beng, .guru, .gujr, .orya, .taml, .telu, .knda, .mlym, .sinh:
 		return INDIC_FEATURES
-	case .khmr, .mymr, .tibt, .java, .bali, .cham, .lana, .tale, .talu, .bugi:
+	case .khmr, .mymr:
 		return BRAHMIC_FEATURES
 	}
+	// Every other USE script, which is most of the Brahmic world. This used to
+	// be a hardcoded list of ten and everything outside it got nothing.
+	if is_use_script(script) {return USE_FEATURES}
 	return nil
 }
 
@@ -171,6 +242,13 @@ script_tag_chain :: proc(script: Script_Tag, out: ^[3]Script_Tag) -> int {
 		v2 = .knd2
 	case .mlym:
 		v2 = .mlm2
+	// Myanmar was the one missing v2 tag of the ten. Noto Sans Myanmar
+	// registers its GSUB and GPOS under `mym2` ALONE, so asking only for
+	// `mymr` found no script table -- and with no table there is no plan, so
+	// the font got no substitutions, no positioning and no reordering at all.
+	// All 72 Myanmar fonts in the corpus were failing on that one line.
+	case .mymr:
+		v2 = .mym2
 	case:
 		out[0] = script
 		return 1

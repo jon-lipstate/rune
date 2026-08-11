@@ -31,6 +31,7 @@ get_default_features :: proc(script: Script_Tag) -> Feature_Set {
 Latin_Required_Stages :: 2 // ccmp and locl stages
 Arabic_Required_Stages :: 2 // rlig/ccmp and form features
 Devanagari_Required_Stages :: 8 // Up through half forms for proper conjuncts
+Myanmar_Required_Stages :: 6 // all of them; HarfBuzz enables every Myanmar feature globally
 
 get_script_feature_stages :: proc(
 	script: Script_Tag,
@@ -51,6 +52,8 @@ get_script_feature_stages :: proc(
 		return Latin_Feature_Stages, Latin_Required_Stages
 	case .deva, .dev2:
 		return Devanagari_Feature_Stages, Devanagari_Required_Stages
+	case .mymr:
+		return Myanmar_Feature_Stages, Myanmar_Required_Stages
 	// TODO: other script sets
 	case:
 		return Latin_Feature_Stages, Latin_Required_Stages
@@ -97,6 +100,26 @@ Arabic_Feature_Stages := [][]Feature_Tag {
 	{.calt}, // Stage 7: contextual alternates
 	{.liga, .clig}, // Stage 8: discretionary ligatures
 	{.mset}, // Stage 9: mark positioning
+}
+
+// HarfBuzz's `collect_features_myanmar`. Every feature here is `enable_feature`
+// -- global, not optional -- which is why every stage is required.
+//
+// Myanmar was falling through to the LATIN stages, so its below-base and
+// above-base substitutions were not in any stage at all and ran in the
+// leftover pass at the very end, after the ligature and stylistic features
+// rather than before them.
+Myanmar_Feature_Stages := [][]Feature_Tag {
+	{.locl, .ccmp}, // Stage 1: localisation and composition
+	// HarfBuzz reorders the syllable here, between ccmp and the basic features.
+	{.rphf}, // Stages 2-5: basic features, one at a time, each after a pause
+	{.pref},
+	{.blwf},
+	{.pstf},
+	// Stage 6: the rest, applied together once syllables are cleared. `dist`,
+	// `abvm` and `blwm` are positioning, and are listed for the same reason
+	// HarfBuzz lists them -- the plan does not distinguish GSUB from GPOS.
+	{.pres, .abvs, .blws, .psts, .dist, .abvm, .blwm},
 }
 
 Devanagari_Feature_Stages := [][]Feature_Tag {

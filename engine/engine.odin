@@ -86,6 +86,8 @@ Engine :: struct {
 	// editor, per frame; anything allocated here would be allocated thousands
 	// of times a second.
 	glyphs: [dynamic]Positioned_Glyph,
+	// Rune index -> byte offset for the piece being shaped; see `shape_piece`.
+	rmap:   [dynamic]int,
 	breaks: [dynamic]Break,
 	// Glyph index at which each break's offset begins. Filled in one merge
 	// walk, so fitting does not rescan the glyph store per candidate.
@@ -131,6 +133,7 @@ make_engine :: proc(allocator := context.allocator) -> ^Engine {
 	e := new(Engine, allocator)
 	e.sh = shaper.create_engine(allocator)
 	e.upem = make(map[shaper.Font_ID]f32, 4, allocator)
+	e.rmap = make([dynamic]int, 0, 64, allocator)
 	e.vmet = make(map[shaper.Font_ID][2]f32, 4, allocator)
 	e.glyphs = make([dynamic]Positioned_Glyph, 0, 256, allocator)
 	e.breaks = make([dynamic]Break, 0, 64, allocator)
@@ -145,6 +148,7 @@ destroy_engine :: proc(e: ^Engine, allocator := context.allocator) {
 	if e == nil {return}
 	shaper.destroy_engine(e.sh)
 	delete(e.upem)
+	delete(e.rmap)
 	delete(e.vmet)
 	delete(e.glyphs)
 	delete(e.breaks)
@@ -213,6 +217,16 @@ layout_paragraph :: proc(
 ) -> []Line {
 	one := [1]Style_Run{{lo = 0, hi = len(s), style = style}}
 	return layout_rich(e, s, one[:], width, allocator)
+}
+
+// Byte offset of rune `i`, clamped. Out-of-range means the shaper reported a
+// cluster the piece does not contain, which should not happen -- clamping keeps
+// a bad cluster inside the string rather than indexing past it.
+@(private)
+rune_to_byte :: proc(rmap: []int, i: int, piece_len: int) -> int {
+	if i < 0 {return 0}
+	if i >= len(rmap) {return piece_len}
+	return rmap[i]
 }
 
 // The same, with the text divided into styled spans.
@@ -387,6 +401,19 @@ shape_piece :: proc(
 	if !shaper.shape_with_plan(e.sh, plan, piece, e.buf) {return}
 	buf := e.buf
 
+	// Rune index -> byte offset within the piece.
+	//
+	// The shaper numbers clusters by RUNE, because that is the unit it maps and
+	// reorders. `Positioned_Glyph.cluster` promises a BYTE offset, which is what
+	// a caller mapping a glyph back to the source actually has: an editor holds
+	// a byte position, and so does a PDF ToUnicode map. Adding the piece's byte
+	// offset to a rune index gave a value that was neither, and that drifted by
+	// one byte for every multi-byte character before it -- correct only while
+	// the text stayed ASCII.
+	clear(&e.rmap)
+	for _, byte_off in piece {append(&e.rmap, byte_off)}
+	append(&e.rmap, len(piece)) // one past the end, for a cluster at the end
+
 	for g, i in buf.glyphs {
 		p := buf.positions[i]
 		append(
@@ -399,7 +426,7 @@ shape_piece :: proc(
 				// piece offset is what keeps byte offsets meaningful across a
 				// script or style change -- without it every piece restarts at
 				// zero and the caller cannot map a glyph to the text.
-				cluster = lo + int(g.cluster),
+				cluster = lo + rune_to_byte(e.rmap[:], int(g.cluster), len(piece)),
 				style = style_index,
 				level = level,
 			},
